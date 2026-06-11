@@ -2,7 +2,8 @@
 version: "3.9"
 
 volumes:
-  protected_media:   # named volume: survives container restarts, isolated from host FS
+  protected_media:    # private upload store (transaction screenshots)
+  staticfiles:        # collectstatic output, shared with potential nginx sidecar
   redis_data:
 
 networks:
@@ -11,11 +12,11 @@ networks:
 
 services:
 
-  # ── 1. Message Broker & Cache ──────────────────────────────────
+  # ── 1. Message Broker & Cache ──────────────────────────────────────────
   redis:
     image: redis:alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes   # enable AOF persistence
+    command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
     networks:
@@ -26,19 +27,14 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── 2. Gunicorn WSGI Application ──────────────────────────────
+  # ── 2. Django Web Application (Gunicorn) ───────────────────────────────
   web:
     build: .
     restart: unless-stopped
-    command: >
-      gunicorn vShop.wsgi:application
-        --bind 0.0.0.0:8000
-        --workers 3
-        --timeout 120
-        --access-logfile -
     env_file: .env
     volumes:
-      - protected_media:/app/protected_media   # ← shared private upload store
+      - protected_media:/app/protected_media
+      - staticfiles:/app/staticfiles
     ports:
       - "8000:8000"
     depends_on:
@@ -46,8 +42,14 @@ services:
         condition: service_healthy
     networks:
       - vshop_net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/login/')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
-  # ── 3. Celery Task Consumer ────────────────────────────────────
+  # ── 3. Celery Task Consumer ───────────────────────────────────────────────
   celery_worker:
     build: .
     restart: unless-stopped
@@ -58,14 +60,16 @@ services:
         --concurrency=4
     env_file: .env
     volumes:
-      - protected_media:/app/protected_media   # ← must mirror web's mount path
+      - protected_media:/app/protected_media
     depends_on:
       redis:
+        condition: service_healthy
+      web:
         condition: service_healthy
     networks:
       - vshop_net
 
-  # ── 4. Celery Beat Scheduler ───────────────────────────────────
+  # ── 4. Celery Beat Scheduler ───────────────────────────────────────────────
   celery_beat:
     build: .
     restart: unless-stopped
@@ -76,6 +80,8 @@ services:
     env_file: .env
     depends_on:
       redis:
+        condition: service_healthy
+      web:
         condition: service_healthy
     networks:
       - vshop_net
