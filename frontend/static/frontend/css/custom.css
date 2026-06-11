@@ -1,0 +1,27 @@
+/* vShop custom styles */
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f172a; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #4f46e5; }
+
+/* Progress bar animation */
+@keyframes progressFill {
+  from { width: 0%; }
+}
+.progress-bar { animation: progressFill 0.8s ease-out; }
+
+/* Glow effect for stat cards */
+.glow-indigo { box-shadow: 0 0 20px rgba(99, 102, 241, 0.15); }
+.glow-green  { box-shadow: 0 0 20px rgba(34, 197, 94, 0.15); }
+.glow-yellow { box-shadow: 0 0 20px rgba(234, 179, 8, 0.15); }
+.glow-red    { box-shadow: 0 0 20px rgba(239, 68, 68, 0.15); }
+
+/* Table hover rows */
+tbody tr:hover { background-color: rgba(99,102,241,0.05); }
+
+/* Input focus glow */
+input:focus, select:focus, textarea:focus {
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.4);
+}

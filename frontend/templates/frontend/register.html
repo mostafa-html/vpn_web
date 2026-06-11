@@ -1,0 +1,38 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Register — vShop{% endblock %}
+{% block content %}
+<div class="min-h-screen flex items-center justify-center bg-slate-900 px-4">
+  <div class="w-full max-w-md">
+    <div class="text-center mb-8">
+      <div class="inline-flex items-center justify-center w-14 h-14 bg-indigo-600 rounded-2xl mb-4">
+        <i class="fa-solid fa-shield-halved text-2xl"></i>
+      </div>
+      <h1 class="text-3xl font-bold text-white">vShop</h1>
+      <p class="text-slate-400 mt-1">Create your account</p>
+    </div>
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-8 shadow-2xl">
+      <h2 class="text-xl font-semibold text-white mb-6">Register</h2>
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <div class="space-y-4">
+          {% for field in form %}
+          <div>
+            <label class="block text-sm text-slate-400 mb-1.5">{{ field.label }}</label>
+            {{ field }}
+            {% if field.errors %}
+              <p class="text-red-400 text-xs mt-1">{{ field.errors.0 }}</p>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        <button type="submit" class="w-full mt-6 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl transition-colors">
+          Create Account
+        </button>
+      </form>
+      <p class="text-center text-slate-400 text-sm mt-5">
+        Already have an account? <a href="{% url 'frontend:login' %}" class="text-indigo-400 hover:underline">Sign in</a>
+      </p>
+    </div>
+  </div>
+</div>
+{% endblock %}
