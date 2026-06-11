@@ -1,0 +1,71 @@
+# ==============================================================================
+# Python / Django Core System Exclusions
+# ==============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==============================================================================
+# Virtual Environments (Local Runtime Environments)
+# ==============================================================================
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# ==============================================================================
+# Local Secret Keys & Global Configuration Keys
+# ==============================================================================
+.env
+.ini
+*.pot
+*.bak
+
+# ==============================================================================
+# System Specific / Core Storage Engines 
+# ==============================================================================
+db.sqlite3
+db.sqlite3-journal
+
+# Media allocations (User uploaded data profiles)
+media/
+staticfiles/
+static_root/
+
+# ==============================================================================
+# IDE Profiles and OS System Clutter
+# ==============================================================================
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
