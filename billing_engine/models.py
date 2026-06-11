@@ -3,6 +3,8 @@ import uuid
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.core.validators import RegexValidator
+from django.core.exceptions import ValidationError
 
 class CustomUser(AbstractUser):
     class Role(models.TextChoices):
@@ -24,6 +26,7 @@ class CustomUser(AbstractUser):
     def __str__(self):
         return f"{self.username} ({self.get_role_display()})"
 
+
 class XuiServer(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255, unique=True)
@@ -40,6 +43,7 @@ class XuiServer(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.ip_address})"
+
 
 class XuiInbound(models.Model):
     class Protocol(models.TextChoices):
@@ -64,6 +68,7 @@ class XuiInbound(models.Model):
     def __str__(self):
         return f"{self.protocol} (ID: {self.xui_inbound_id}) on {self.server.name}"
 
+
 class PricingTier(models.Model):
     class TargetRole(models.TextChoices):
         SUB_ADMIN = 'SUB_ADMIN', 'Sub Admin'
@@ -84,3 +89,149 @@ class PricingTier(models.Model):
         if self.specific_user:
             return f"Custom Rate for {self.specific_user.username}"
         return f"Global Rate for {self.get_target_role_display()}"
+
+
+class VPNPlan(models.Model):
+    """
+    Predefined commercial packages available for user purchase.
+    """
+    name = models.CharField(max_length=255)
+    total_gb = models.PositiveIntegerField()
+    duration_days = models.PositiveIntegerField()
+    is_visible = models.BooleanField(
+        default=True, 
+        help_text="Used for safe soft-deletes to preserve historical metrics."
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "VPN Plan"
+        verbose_name_plural = "VPN Plans"
+
+    def __str__(self):
+        return f"{self.name} - {self.total_gb}GB ({self.duration_days} Days)"
+
+
+class Transaction(models.Model):
+    """
+    Immutable financial audit trail for user balance top-ups and plan purchases.
+    """
+    class TypeChoices(models.TextChoices):
+        WALLET_TOPUP = "WALLET_TOPUP", "Wallet Top-up"
+        PLAN_PURCHASE = "PLAN_PURCHASE", "Plan Purchase"
+
+    class StatusChoices(models.TextChoices):
+        PENDING = "PENDING", "Pending Approval"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="transactions"
+    )
+    type = models.CharField(max_length=20, choices=TypeChoices.choices)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    screenshot = models.ImageField(upload_to="protected_media/transactions/")
+    payment_ref_code = models.CharField(
+        max_length=100,
+        unique=True,
+        db_index=True,
+        validators=[
+            RegexValidator(
+                regex=r"^[A-Z0-9]+$",
+                message="Reference code must be uppercase alphanumeric characters only."
+            )
+        ]
+    )
+    status = models.CharField(max_length=20, choices=StatusChoices.choices, default=StatusChoices.PENDING)
+    rejection_reason = models.TextField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="reviewed_transactions"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def clean(self):
+        if self.payment_ref_code:
+            self.payment_ref_code = self.payment_ref_code.upper()
+        if self.status == self.StatusChoices.REJECTED and not self.rejection_reason:
+            raise ValidationError({"rejection_reason": "A reason must be provided if rejected."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Tx {self.payment_ref_code} - {self.user.username} ({self.amount})"
+
+
+class ProxySubscription(models.Model):
+    """
+    The source-of-truth quantitative and temporal allocation pool for a user's proxy access.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="subscriptions"
+    )
+    xui_client_uuid = models.CharField(
+        max_length=36,
+        help_text="Core downstream token used for client authentication across panels."
+    )
+    subscription_url = models.URLField()
+    total_allocated_gb = models.PositiveIntegerField()
+    used_gb = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    expires_at = models.DateTimeField()
+    is_active = models.BooleanField(default=True)
+
+    # Traffic Reset Patch Storage
+    last_known_up_bytes = models.BigIntegerField(default=0)
+    last_known_down_bytes = models.BigIntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Sub {self.xui_client_uuid[:8]} - User: {self.user.username}"
+
+
+class SubscriptionConfigMapping(models.Model):
+    """
+    Architectural Junction Bridge: Maps a single user data pool to multiple 
+    inbound protocols and remote panels while generating structured non-colliding client identifiers.
+    """
+    subscription = models.ForeignKey(
+        ProxySubscription,
+        on_delete=models.CASCADE,
+        related_name="mappings"
+    )
+    inbound = models.ForeignKey(
+        XuiInbound,
+        on_delete=models.CASCADE,
+        related_name="mapped_subscriptions"
+    )
+    xui_client_email = models.CharField(
+        max_length=255,
+        help_text="Automated unique email routing key required by remote XUI panels."
+    )
+
+    class Meta:
+        unique_together = ("subscription", "inbound")
+
+    def save(self, *args, **kwargs):
+        if not self.xui_client_email:
+            self.xui_client_email = f"user_{self.subscription.user.id}_{self.inbound.id}@{settings.ALLOWED_HOSTS[0] if settings.ALLOWED_HOSTS else 'ledger.local'}"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Mapping: Sub {self.subscription.id} <-> Inbound {self.inbound.id}"
