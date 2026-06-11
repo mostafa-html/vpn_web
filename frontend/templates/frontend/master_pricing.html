@@ -1,0 +1,56 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Pricing — vShop Admin{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <h1 class="text-2xl font-bold text-white">Pricing Tiers</h1>
+
+  <!-- Add Form -->
+  <div class="card">
+    <h2 class="text-lg font-semibold text-white mb-4">Add Pricing Tier</h2>
+    <form method="post" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+      {% csrf_token %}
+      {% for field in form %}
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">{{ field.label }}</label>
+        {{ field }}
+        {% if field.errors %}<p class="text-red-400 text-xs mt-1">{{ field.errors.0 }}</p>{% endif %}
+      </div>
+      {% endfor %}
+      <div><button type="submit" class="btn-primary w-full"><i class="fa-solid fa-plus"></i> Add</button></div>
+    </form>
+  </div>
+
+  <!-- Tiers Table -->
+  <div class="card">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-slate-400 text-xs uppercase border-b border-slate-700">
+          <th class="text-left pb-3">Target Role</th>
+          <th class="text-left pb-3">Specific User</th>
+          <th class="text-right pb-3">$/GB</th>
+          <th class="text-right pb-3">$/Day</th>
+          <th class="text-right pb-3">Actions</th>
+        </tr></thead>
+        <tbody>
+          {% for tier in tiers %}
+          <tr class="table-row">
+            <td class="py-3 text-white">{{ tier.get_target_role_display }}</td>
+            <td class="py-3 text-slate-300">{{ tier.specific_user.username|default:'Global' }}</td>
+            <td class="py-3 text-right font-mono text-green-400">${{ tier.price_per_gb }}</td>
+            <td class="py-3 text-right font-mono text-green-400">${{ tier.price_per_day }}</td>
+            <td class="py-3 text-right">
+              <form method="post" action="{% url 'frontend:master_pricing_delete' tier.id %}" style="display:inline">
+                {% csrf_token %}
+                <button type="submit" onclick="return confirm('Delete this tier?')" class="text-xs text-red-400 hover:text-red-300"><i class="fa-solid fa-trash"></i> Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5" class="py-10 text-center text-slate-400">No pricing tiers configured.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

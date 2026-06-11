@@ -1,0 +1,66 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Plans — vShop Admin{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <h1 class="text-2xl font-bold text-white">VPN Plans Management</h1>
+
+  <!-- Create Form -->
+  <div class="card">
+    <h2 class="text-lg font-semibold text-white mb-4">Create Plan</h2>
+    <form method="post" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
+      {% csrf_token %}
+      {% for field in form %}
+      <div>
+        {% if field.field.widget.input_type == 'checkbox' %}
+        <div class="flex items-center gap-2 mt-6">{{ field }}<label class="text-sm text-slate-300">{{ field.label }}</label></div>
+        {% else %}
+        <label class="block text-xs text-slate-400 mb-1">{{ field.label }}</label>
+        {{ field }}
+        {% endif %}
+        {% if field.errors %}<p class="text-red-400 text-xs mt-1">{{ field.errors.0 }}</p>{% endif %}
+      </div>
+      {% endfor %}
+      <div><button type="submit" class="btn-primary w-full"><i class="fa-solid fa-plus"></i> Create</button></div>
+    </form>
+  </div>
+
+  <!-- Plans Table -->
+  <div class="card">
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-slate-400 text-xs uppercase border-b border-slate-700">
+          <th class="text-left pb-3">Name</th>
+          <th class="text-right pb-3">GB</th>
+          <th class="text-right pb-3">Days</th>
+          <th class="text-right pb-3">Visible</th>
+          <th class="text-right pb-3">Created</th>
+          <th class="text-right pb-3">Actions</th>
+        </tr></thead>
+        <tbody>
+          {% for plan in plans %}
+          <tr class="table-row {% if not plan.is_visible %}opacity-50{% endif %}">
+            <td class="py-3 font-medium text-white">{{ plan.name }}</td>
+            <td class="py-3 text-right text-slate-300">{{ plan.total_gb }}</td>
+            <td class="py-3 text-right text-slate-300">{{ plan.duration_days }}</td>
+            <td class="py-3 text-right">{% if plan.is_visible %}<span class="badge-approved">Yes</span>{% else %}<span class="badge-expired">Hidden</span>{% endif %}</td>
+            <td class="py-3 text-right text-slate-400">{{ plan.created_at|date:'M d, Y' }}</td>
+            <td class="py-3 text-right">
+              {% if plan.is_visible %}
+              <form method="post" action="{% url 'frontend:master_plan_delete' plan.id %}" style="display:inline">
+                {% csrf_token %}
+                <button type="submit" onclick="return confirm('Hide this plan?')" class="text-xs text-red-400 hover:text-red-300"><i class="fa-solid fa-eye-slash"></i> Hide</button>
+              </form>
+              {% else %}
+              <span class="text-xs text-slate-500">Hidden</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="py-10 text-center text-slate-400">No plans yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

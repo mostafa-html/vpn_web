@@ -1,0 +1,50 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Review Transaction — vShop Admin{% endblock %}
+{% block content %}
+<div class="max-w-2xl mx-auto space-y-6">
+  <div class="flex items-center gap-3">
+    <a href="{% url 'frontend:master_transactions' %}" class="text-slate-400 hover:text-white"><i class="fa-solid fa-arrow-left"></i></a>
+    <h1 class="text-2xl font-bold text-white">Review Transaction</h1>
+  </div>
+
+  <!-- Transaction Info -->
+  <div class="card space-y-4">
+    <div class="grid grid-cols-2 gap-4 text-sm">
+      <div><p class="text-slate-400">User</p><p class="text-white font-semibold">{{ tx.user.username }}</p></div>
+      <div><p class="text-slate-400">Reference Code</p><p class="text-white font-mono">{{ tx.payment_ref_code }}</p></div>
+      <div><p class="text-slate-400">Type</p><p class="text-white">{{ tx.get_type_display }}</p></div>
+      <div><p class="text-slate-400">Amount</p><p class="text-white font-bold text-lg">${{ tx.amount|floatformat:2 }}</p></div>
+      <div><p class="text-slate-400">Submitted</p><p class="text-white">{{ tx.created_at|date:'M d, Y H:i' }}</p></div>
+    </div>
+    {% if tx.screenshot %}
+    <div>
+      <p class="text-slate-400 text-sm mb-2">Payment Screenshot</p>
+      <a href="{{ tx.screenshot.url }}" target="_blank" class="text-indigo-400 hover:underline text-sm"><i class="fa-solid fa-image mr-1"></i> View Screenshot</a>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Review Form -->
+  <div class="card">
+    <h2 class="text-lg font-semibold text-white mb-4">Decision</h2>
+    <form method="post" class="space-y-4">
+      {% csrf_token %}
+      <div>
+        <label class="block text-sm text-slate-400 mb-1.5">Action</label>
+        {{ form.status }}
+      </div>
+      <div>
+        <label class="block text-sm text-slate-400 mb-1.5">Rejection Reason <span class="text-slate-500">(required if rejecting)</span></label>
+        {{ form.rejection_reason }}
+      </div>
+      {% if form.non_field_errors %}
+      <div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-red-400 text-sm">{{ form.non_field_errors.0 }}</div>
+      {% endif %}
+      <div class="flex gap-3">
+        <button type="submit" class="btn-primary"><i class="fa-solid fa-gavel"></i> Submit Decision</button>
+        <a href="{% url 'frontend:master_transactions' %}" class="btn-primary bg-slate-700 hover:bg-slate-600">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

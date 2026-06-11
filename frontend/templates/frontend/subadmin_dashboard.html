@@ -1,0 +1,44 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Sub-Admin Dashboard — vShop{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold text-white">Sub-Admin Dashboard</h1>
+    <p class="text-slate-400 mt-1">Manage your users and monitor their activity</p>
+  </div>
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div class="stat-card glow-indigo">
+      <div class="w-12 h-12 rounded-xl bg-indigo-600/20 flex items-center justify-center shrink-0">
+        <i class="fa-solid fa-wallet text-indigo-400 text-xl"></i>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase tracking-wider">Wallet Balance</p>
+        <p class="text-2xl font-bold text-white">${{ user.wallet_balance|floatformat:2 }}</p>
+      </div>
+    </div>
+    <div class="stat-card glow-green">
+      <div class="w-12 h-12 rounded-xl bg-green-600/20 flex items-center justify-center shrink-0">
+        <i class="fa-solid fa-users text-green-400 text-xl"></i>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase tracking-wider">Managed Users</p>
+        <p class="text-2xl font-bold text-white">{{ managed_count }}</p>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="w-12 h-12 rounded-xl bg-blue-600/20 flex items-center justify-center shrink-0">
+        <i class="fa-solid fa-satellite-dish text-blue-400 text-xl"></i>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase tracking-wider">Active Subscriptions</p>
+        <p class="text-2xl font-bold text-white">{{ active_subs }}</p>
+      </div>
+    </div>
+  </div>
+  <div class="flex flex-wrap gap-3">
+    <a href="{% url 'frontend:subadmin_users' %}" class="btn-primary"><i class="fa-solid fa-users"></i> Manage Users</a>
+    <a href="{% url 'frontend:subadmin_create_user' %}" class="btn-primary bg-green-600 hover:bg-green-700"><i class="fa-solid fa-user-plus"></i> Add User</a>
+    <a href="{% url 'frontend:wallet' %}" class="btn-primary bg-purple-600 hover:bg-purple-700"><i class="fa-solid fa-wallet"></i> My Wallet</a>
+  </div>
+</div>
+{% endblock %}
