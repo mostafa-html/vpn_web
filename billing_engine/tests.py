@@ -192,3 +192,77 @@ class ProxyInfrastructureArchitectureTests(TestCase):
             SubscriptionConfigMapping.objects.create(
                 subscription=self.subscription, inbound=self.german_vless_inbound
             )
+            
+from unittest import TestCase
+from unittest.mock import MagicMock, patch
+import requests
+import uuid
+from requests.exceptions import Timeout
+from billing_engine.xui_client import XuiAPIClient, XuiAPIException
+from billing_engine.models import XuiServer
+class TestXuiAPIClient(TestCase):
+    def setUp(self):
+        # Build a valid mockup database infrastructure instance matching models.py fields
+        self.mock_server = MagicMock(spec=XuiServer)
+        self.mock_server.id = uuid.uuid4()  # Generates dynamic UUID to mimic actual model instantiation
+        self.mock_server.ip_address = "192.168.1.100"
+        self.mock_server.api_port = 2053
+        self.mock_server.admin_username = "admin"
+        self.mock_server.admin_password = "secure_password"
+        
+        self.client = XuiAPIClient(self.mock_server)
+
+    @patch("billing_engine.xui_client.cache")
+    @patch("billing_engine.xui_client.requests.request")
+    @patch("billing_engine.xui_client.requests.post")
+    def test_session_token_isolation_and_cache_hits(self, mock_post, mock_request, mock_cache):
+        """Verifies cache handles subsequent execution windows without firing duplicate logins."""
+        # Scenario 1: Cache Miss - Requires HTTP Handshake
+        mock_cache.get.return_value = None
+        
+        mock_login_response = MagicMock()
+        mock_login_response.json.return_value = {"success": True}
+        mock_login_response.cookies.get_dict.return_value = {"session": "mocked_cookie_val"}
+        mock_post.return_value = mock_login_response
+
+        mock_api_response = MagicMock()
+        mock_api_response.status_code = 200
+        mock_api_response.json.return_value = {"success": True, "obj": []}
+        mock_request.return_value = mock_api_response
+
+        # Execute first call (Triggers Login Handshake)
+        res_one = self.client.get_inbounds()
+        
+        self.assertEqual(res_one["success"], True)
+        mock_post.assert_called_once()  # Handshake happened
+        
+        # FIX: Asserting against the dynamic property ensures safety regardless of UUID structure
+        mock_cache.set.assert_called_once_with(self.client.cache_key, {"session": "mocked_cookie_val"}, timeout=3600)
+
+        # Scenario 2: Cache Hit - Subsequent request bypasses login completely
+        mock_post.reset_mock()
+        mock_cache.get.return_value = {"session": "mocked_cookie_val"}
+
+        # Execute second call
+        res_two = self.client.get_inbounds()
+        
+        self.assertEqual(res_two["success"], True)
+        mock_post.assert_not_called()  # Login skipped entirely due to healthy cache
+
+    @patch("billing_engine.xui_client.time.sleep")  # Patch sleep to keep test execution rapid
+    @patch("billing_engine.xui_client.cache")
+    @patch("billing_engine.xui_client.requests.request")
+    def test_network_fault_tolerance_retry_exhaustion(self, mock_request, mock_cache, mock_sleep):
+        """Verifies that 3 consecutive network failures throw a single XuiAPIException."""
+        # Ensure token validation stage passes transparently
+        mock_cache.get.return_value = {"session": "active_cookie"}
+        
+        # Simulate network failures continuously
+        mock_request.side_effect = Timeout("Connection timed out.")
+
+        with self.assertRaises(XuiAPIException):
+            self.client.get_inbounds()
+
+        # Confirm client attempted exactly 3 times before raising the bubble error
+        self.assertEqual(mock_request.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)  # Fails 1 (sleeps), Fails 2 (sleeps), Fails 3 (raises)
