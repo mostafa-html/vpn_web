@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "billing_engine",
+    "django_celery_beat",
 ]
 
 MIDDLEWARE = [
@@ -109,3 +110,73 @@ STATIC_URL = "static/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = 'billing_engine.CustomUser'
+
+# ─────────────────────────────────────────────
+# INSTALLED_APPS additions  (splice into existing list)
+# ─────────────────────────────────────────────
+# Add these two entries to your INSTALLED_APPS list:
+#   "django_celery_beat",
+#   "django_celery_results",   # optional but recommended for task introspection
+
+# ─────────────────────────────────────────────
+# Redis / Cache layer
+# ─────────────────────────────────────────────
+from decouple import config
+
+REDIS_URL = config("REDIS_URL", default="redis://redis:6379/0")
+
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": REDIS_URL,
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "SOCKET_CONNECT_TIMEOUT": 5,
+            "SOCKET_TIMEOUT": 5,
+            "IGNORE_EXCEPTIONS": True,  # degrade gracefully if Redis is cold
+        },
+        "KEY_PREFIX": "vshop",
+    }
+}
+
+SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+SESSION_CACHE_ALIAS = "default"
+
+# ─────────────────────────────────────────────
+# Celery Core
+# ─────────────────────────────────────────────
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = config("REDIS_URL", default="redis://redis:6379/1")
+# Using DB/1 for results keeps broker queue (DB/0) unpolluted
+
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TIMEZONE = TIME_ZONE  # inherits "UTC" from your existing setting
+
+# Prevent a single slow task from monopolising a worker slot indefinitely
+CELERY_TASK_SOFT_TIME_LIMIT = 300   # 5-minute graceful warning
+CELERY_TASK_TIME_LIMIT = 360        # 6-minute hard kill
+
+# ─────────────────────────────────────────────
+# Celery Beat — Periodic Schedule
+# ─────────────────────────────────────────────
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+
+CELERY_BEAT_SCHEDULE = {
+    "sync-edge-traffic-every-10min": {
+        "task": "billing_engine.tasks.sync_all_edge_traffic",
+        # Fires at :00, :10, :20, :30, :40, :50 of every hour
+        "schedule": crontab(minute="*/10"),
+        "options": {
+            "expires": 540,  # discard stale beat ticks if worker was down
+        },
+    },
+}
+
+# ─────────────────────────────────────────────
+# Protected Media (shared with celery_worker)
+# ─────────────────────────────────────────────
+PROTECTED_MEDIA_ROOT = BASE_DIR / "protected_media"

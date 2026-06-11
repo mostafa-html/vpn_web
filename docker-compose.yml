@@ -1,0 +1,81 @@
+# docker-compose.yml  — vShop Multi-Tenant Proxy Billing Stack
+version: "3.9"
+
+volumes:
+  protected_media:   # named volume: survives container restarts, isolated from host FS
+  redis_data:
+
+networks:
+  vshop_net:
+    driver: bridge
+
+services:
+
+  # ── 1. Message Broker & Cache ──────────────────────────────────
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes   # enable AOF persistence
+    volumes:
+      - redis_data:/data
+    networks:
+      - vshop_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 2. Gunicorn WSGI Application ──────────────────────────────
+  web:
+    build: .
+    restart: unless-stopped
+    command: >
+      gunicorn vShop.wsgi:application
+        --bind 0.0.0.0:8000
+        --workers 3
+        --timeout 120
+        --access-logfile -
+    env_file: .env
+    volumes:
+      - protected_media:/app/protected_media   # ← shared private upload store
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - vshop_net
+
+  # ── 3. Celery Task Consumer ────────────────────────────────────
+  celery_worker:
+    build: .
+    restart: unless-stopped
+    command: >
+      celery -A vShop worker
+        --loglevel=info
+        -Ofair
+        --concurrency=4
+    env_file: .env
+    volumes:
+      - protected_media:/app/protected_media   # ← must mirror web's mount path
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - vshop_net
+
+  # ── 4. Celery Beat Scheduler ───────────────────────────────────
+  celery_beat:
+    build: .
+    restart: unless-stopped
+    command: >
+      celery -A vShop beat
+        --loglevel=info
+        --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - vshop_net
