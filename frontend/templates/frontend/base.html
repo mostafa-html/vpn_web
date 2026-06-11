@@ -53,7 +53,7 @@
 <script>
 window._djangoMessages = [
   {% for m in messages %}
-  { level: "{{ m.tags }}", text: {{ m.message|tojson }} },
+  { level: "{{ m.tags }}", text: "{{ m.message|escapejs }}" },
   {% endfor %}
 ];
 </script>

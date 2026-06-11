@@ -1,0 +1,18 @@
+/* vShop – supplemental styles
+   Most styling is handled by Tailwind CDN in base.html.
+   Add any custom non-Tailwind overrides here. */
+
+/* Smooth scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f172a; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #4f46e5; }
+
+/* QR code container */
+.qr-container img { image-rendering: pixelated; }
+
+/* Progress bar animation */
+@keyframes progress-fill {
+  from { width: 0%; }
+}
+.progress-animated { animation: progress-fill 0.8s ease-out forwards; }
