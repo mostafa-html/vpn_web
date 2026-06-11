@@ -1,0 +1,82 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Subscriptions — vShop{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <h1 class="text-2xl font-bold text-white">My Subscriptions</h1>
+
+  <!-- Tab Toggle -->
+  <div class="flex gap-2" id="tabs">
+    <button onclick="switchTab('active')" id="tab-active" class="px-5 py-2 rounded-lg font-medium text-sm bg-indigo-600 text-white transition-colors">Active ({{ active_subs|length }})</button>
+    <button onclick="switchTab('expired')" id="tab-expired" class="px-5 py-2 rounded-lg font-medium text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors">Expired ({{ expired_subs|length }})</button>
+  </div>
+
+  <!-- Active Subs -->
+  <div id="pane-active">
+    {% if active_subs %}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {% for sub in active_subs %}
+      {% with pct=sub.used_gb|floatformat:0 %}
+      <a href="{% url 'frontend:subscription_detail' sub.id %}" class="card hover:border-indigo-500/50 transition-all block">
+        <div class="flex items-center justify-between mb-3">
+          <span class="font-mono text-xs text-slate-400">#{{ sub.xui_client_uuid|slice:':8' }}...</span>
+          <span class="badge-active">Active</span>
+        </div>
+        <div class="space-y-2 text-sm text-slate-300 mb-4">
+          <div class="flex justify-between"><span>Data Used</span><span class="font-semibold text-white">{{ sub.used_gb|floatformat:2 }} / {{ sub.total_allocated_gb }} GB</span></div>
+          <div class="w-full bg-slate-700 rounded-full h-2">
+            {% with usage_pct=sub.used_gb %}
+            <div class="h-2 rounded-full bg-green-500 progress-bar" data-usage-bar="{% widthratio sub.used_gb sub.total_allocated_gb 100 %}" style="width: {% widthratio sub.used_gb sub.total_allocated_gb 100 %}%;"></div>
+            {% endwith %}
+          </div>
+          <div class="flex justify-between"><span>Expires</span><span data-expires="{{ sub.expires_at|date:'c' }}" class="text-indigo-400 font-medium">{{ sub.expires_at|date:'M d, Y' }}</span></div>
+        </div>
+        <span class="text-indigo-400 text-xs">View details <i class="fa-solid fa-arrow-right ml-1"></i></span>
+      </a>
+      {% endwith %}
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="card text-center py-14">
+      <i class="fa-solid fa-satellite-dish text-slate-600 text-5xl mb-4"></i>
+      <p class="text-slate-300 text-lg font-medium">No active subscriptions</p>
+      <a href="{% url 'frontend:plans' %}" class="btn-primary mt-4 inline-flex"><i class="fa-solid fa-cart-shopping"></i> Buy a Plan</a>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Expired Subs -->
+  <div id="pane-expired" class="hidden">
+    {% if expired_subs %}
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {% for sub in expired_subs %}
+      <div class="card opacity-60">
+        <div class="flex items-center justify-between mb-2">
+          <span class="font-mono text-xs text-slate-400">#{{ sub.xui_client_uuid|slice:':8' }}...</span>
+          <span class="badge-expired">Expired</span>
+        </div>
+        <div class="text-sm text-slate-400">
+          <p>{{ sub.used_gb|floatformat:2 }} / {{ sub.total_allocated_gb }} GB &bull; Expired {{ sub.expires_at|date:'M d, Y' }}</p>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="card text-center py-10"><p class="text-slate-400">No expired subscriptions.</p></div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+{% block extra_js %}
+<script>
+function switchTab(tab) {
+  document.getElementById('pane-active').classList.toggle('hidden', tab !== 'active');
+  document.getElementById('pane-expired').classList.toggle('hidden', tab !== 'expired');
+  document.getElementById('tab-active').className = tab === 'active'
+    ? 'px-5 py-2 rounded-lg font-medium text-sm bg-indigo-600 text-white transition-colors'
+    : 'px-5 py-2 rounded-lg font-medium text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors';
+  document.getElementById('tab-expired').className = tab === 'expired'
+    ? 'px-5 py-2 rounded-lg font-medium text-sm bg-indigo-600 text-white transition-colors'
+    : 'px-5 py-2 rounded-lg font-medium text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors';
+}
+</script>
+{% endblock %}

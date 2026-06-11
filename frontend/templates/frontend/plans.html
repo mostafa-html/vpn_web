@@ -1,0 +1,81 @@
+{% extends 'frontend/base.html' %}
+{% block title %}VPN Plans — vShop{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold text-white">VPN Plans</h1>
+    <p class="text-slate-400 mt-1">Choose a plan or create a custom one</p>
+  </div>
+
+  {% if tier %}
+  <div class="bg-indigo-600/10 border border-indigo-600/30 rounded-xl px-5 py-3 flex items-center gap-3">
+    <i class="fa-solid fa-tags text-indigo-400"></i>
+    <span class="text-sm text-slate-300">Your rate: <strong class="text-white">${{ tier.price_per_gb }}/GB</strong> + <strong class="text-white">${{ tier.price_per_day }}/day</strong></span>
+  </div>
+  {% endif %}
+
+  {% if plans %}
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+    {% for plan in plans %}
+    <div class="card hover:border-indigo-500/50 transition-all group">
+      <div class="flex items-start justify-between mb-4">
+        <div>
+          <h3 class="text-lg font-bold text-white group-hover:text-indigo-400 transition-colors">{{ plan.name }}</h3>
+          <p class="text-xs text-slate-400 mt-0.5">VPN Package</p>
+        </div>
+        <div class="w-10 h-10 rounded-lg bg-indigo-600/20 flex items-center justify-center">
+          <i class="fa-solid fa-bolt text-indigo-400"></i>
+        </div>
+      </div>
+      <div class="space-y-2 mb-5">
+        <div class="flex items-center gap-2 text-sm text-slate-300">
+          <i class="fa-solid fa-database text-indigo-400 w-4"></i>
+          <span>{{ plan.total_gb }} GB Data</span>
+        </div>
+        <div class="flex items-center gap-2 text-sm text-slate-300">
+          <i class="fa-solid fa-clock text-purple-400 w-4"></i>
+          <span>{{ plan.duration_days }} Days</span>
+        </div>
+        {% if tier %}
+        <div class="flex items-center gap-2 text-sm">
+          <i class="fa-solid fa-dollar-sign text-green-400 w-4"></i>
+          <span class="font-semibold text-green-400">
+            ~${{ plan.total_gb|add:"0"|floatformat:0 }}&times;{{ tier.price_per_gb }} + {{ plan.duration_days }}&times;{{ tier.price_per_day }}
+          </span>
+        </div>
+        {% endif %}
+      </div>
+      <form method="post" action="{% url 'frontend:buy_plan' plan.id %}">
+        {% csrf_token %}
+        <button type="submit" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 rounded-lg transition-colors">
+          Buy Now
+        </button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card text-center py-14">
+    <i class="fa-solid fa-box-open text-slate-600 text-5xl mb-4"></i>
+    <p class="text-slate-300 text-lg font-medium">No plans available yet</p>
+    <p class="text-slate-400 text-sm mt-1">Contact your administrator to set up VPN plans.</p>
+  </div>
+  {% endif %}
+
+  <!-- Custom Plan -->
+  <div class="card border-dashed border-slate-600">
+    <div class="flex items-center gap-3 mb-4">
+      <div class="w-10 h-10 rounded-lg bg-purple-600/20 flex items-center justify-center">
+        <i class="fa-solid fa-sliders text-purple-400"></i>
+      </div>
+      <div>
+        <h3 class="font-semibold text-white">Custom Plan</h3>
+        <p class="text-xs text-slate-400">Set your own data and duration</p>
+      </div>
+    </div>
+    <a href="{% url 'frontend:custom_plan' %}" class="btn-primary bg-purple-600 hover:bg-purple-700">
+      <i class="fa-solid fa-pencil"></i> Configure Custom Plan
+    </a>
+  </div>
+</div>
+{% endblock %}

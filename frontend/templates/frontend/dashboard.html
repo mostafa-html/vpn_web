@@ -1,0 +1,90 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Dashboard — vShop{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <div>
+    <h1 class="text-2xl font-bold text-white">Dashboard</h1>
+    <p class="text-slate-400 mt-1">Welcome back, <span class="text-indigo-400">{{ user.username }}</span></p>
+  </div>
+
+  <!-- Stat Cards -->
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div class="stat-card glow-indigo">
+      <div class="w-12 h-12 rounded-xl bg-indigo-600/20 flex items-center justify-center shrink-0">
+        <i class="fa-solid fa-wallet text-indigo-400 text-xl"></i>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase tracking-wider">Wallet Balance</p>
+        <p class="text-2xl font-bold text-white">${{ user.wallet_balance|floatformat:2 }}</p>
+      </div>
+    </div>
+    <div class="stat-card glow-green">
+      <div class="w-12 h-12 rounded-xl bg-green-600/20 flex items-center justify-center shrink-0">
+        <i class="fa-solid fa-satellite-dish text-green-400 text-xl"></i>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase tracking-wider">Active Subscriptions</p>
+        <p class="text-2xl font-bold text-white">{{ active_subs }}</p>
+      </div>
+    </div>
+    <div class="stat-card">
+      <div class="w-12 h-12 rounded-xl bg-purple-600/20 flex items-center justify-center shrink-0">
+        <i class="fa-solid fa-shield-halved text-purple-400 text-xl"></i>
+      </div>
+      <div>
+        <p class="text-xs text-slate-400 uppercase tracking-wider">Account Role</p>
+        <p class="text-lg font-bold text-white">{{ user.get_role_display }}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quick Actions -->
+  <div class="flex flex-wrap gap-3">
+    <a href="{% url 'frontend:plans' %}" class="btn-primary"><i class="fa-solid fa-cart-shopping"></i> Buy Plan</a>
+    <a href="{% url 'frontend:wallet' %}" class="btn-primary bg-purple-600 hover:bg-purple-700"><i class="fa-solid fa-plus"></i> Top Up Wallet</a>
+    <a href="{% url 'frontend:subscriptions' %}" class="btn-primary bg-slate-700 hover:bg-slate-600"><i class="fa-solid fa-list"></i> My Subscriptions</a>
+  </div>
+
+  <!-- Recent Transactions -->
+  <div class="card">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold text-white">Recent Transactions</h2>
+      <a href="{% url 'frontend:transactions' %}" class="text-sm text-indigo-400 hover:underline">View all</a>
+    </div>
+    {% if recent_txns %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-slate-400 text-xs uppercase border-b border-slate-700">
+            <th class="text-left pb-3">Reference</th>
+            <th class="text-left pb-3">Type</th>
+            <th class="text-right pb-3">Amount</th>
+            <th class="text-right pb-3">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tx in recent_txns %}
+          <tr class="table-row">
+            <td class="py-3 font-mono text-slate-300">{{ tx.payment_ref_code }}</td>
+            <td class="py-3 text-slate-300">{{ tx.get_type_display }}</td>
+            <td class="py-3 text-right font-semibold text-white">${{ tx.amount|floatformat:2 }}</td>
+            <td class="py-3 text-right">
+              {% if tx.status == 'PENDING' %}<span class="badge-pending">Pending</span>
+              {% elif tx.status == 'APPROVED' %}<span class="badge-approved">Approved</span>
+              {% else %}<span class="badge-rejected">Rejected</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center py-10">
+      <i class="fa-solid fa-receipt text-slate-600 text-4xl mb-3"></i>
+      <p class="text-slate-400">No transactions yet.</p>
+      <a href="{% url 'frontend:wallet' %}" class="text-indigo-400 text-sm hover:underline mt-1 inline-block">Top up your wallet to get started</a>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,79 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Subscription Detail — vShop{% endblock %}
+{% block content %}
+<div class="max-w-2xl space-y-6">
+  <div class="flex items-center gap-4">
+    <a href="{% url 'frontend:subscriptions' %}" class="text-slate-400 hover:text-white"><i class="fa-solid fa-arrow-left"></i></a>
+    <h1 class="text-2xl font-bold text-white">Subscription Detail</h1>
+    {% if sub.is_active %}<span class="badge-active">Active</span>{% else %}<span class="badge-expired">Expired</span>{% endif %}
+  </div>
+
+  <!-- Usage Card -->
+  <div class="card space-y-4">
+    <h2 class="font-semibold text-slate-300 text-sm uppercase tracking-wider">Data Usage</h2>
+    <div class="flex justify-between text-sm mb-1">
+      <span class="text-slate-400">Used</span>
+      <span class="text-white font-semibold">{{ sub.used_gb|floatformat:2 }} GB / {{ sub.total_allocated_gb }} GB</span>
+    </div>
+    <div class="w-full bg-slate-700 rounded-full h-3">
+      <div class="h-3 rounded-full progress-bar" data-usage-bar="{{ usage_pct }}" style="width: {{ usage_pct }}%;"></div>
+    </div>
+    <p class="text-xs text-slate-400">{{ usage_pct }}% used</p>
+  </div>
+
+  <!-- Time Card -->
+  <div class="card">
+    <h2 class="font-semibold text-slate-300 text-sm uppercase tracking-wider mb-3">Time Remaining</h2>
+    <div class="flex items-center gap-4">
+      <div class="w-14 h-14 rounded-xl bg-indigo-600/20 flex items-center justify-center">
+        <i class="fa-solid fa-clock text-indigo-400 text-2xl"></i>
+      </div>
+      <div>
+        <p class="text-3xl font-bold text-white" data-expires="{{ sub.expires_at|date:'c' }}">{{ remaining_days }}d</p>
+        <p class="text-xs text-slate-400">Expires {{ sub.expires_at|date:'M d, Y H:i' }}</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Config Card -->
+  <div class="card space-y-4">
+    <h2 class="font-semibold text-slate-300 text-sm uppercase tracking-wider">Connection Config</h2>
+
+    <div>
+      <label class="text-xs text-slate-400 uppercase mb-1 block">Client UUID</label>
+      <div class="flex items-center gap-2 bg-slate-900 rounded-lg px-3 py-2">
+        <span class="font-mono text-sm text-slate-200 flex-1 break-all">{{ sub.xui_client_uuid }}</span>
+        <button onclick="copyToClipboard('{{ sub.xui_client_uuid }}', this)" class="text-slate-400 hover:text-indigo-400 shrink-0">
+          <i class="fa-regular fa-copy"></i>
+        </button>
+      </div>
+    </div>
+
+    <div>
+      <label class="text-xs text-slate-400 uppercase mb-1 block">Subscription URL</label>
+      <div class="flex items-center gap-2 bg-slate-900 rounded-lg px-3 py-2">
+        <span class="font-mono text-xs text-slate-300 flex-1 break-all">{{ sub.subscription_url }}</span>
+        <button onclick="copyToClipboard('{{ sub.subscription_url }}', this)" class="text-slate-400 hover:text-indigo-400 shrink-0">
+          <i class="fa-regular fa-copy"></i>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mappings -->
+  {% if sub.mappings.all %}
+  <div class="card">
+    <h2 class="font-semibold text-slate-300 text-sm uppercase tracking-wider mb-3">Protocol Mappings</h2>
+    <div class="space-y-2">
+      {% for m in sub.mappings.all %}
+      <div class="flex items-center justify-between bg-slate-900/50 rounded-lg px-4 py-2 text-sm">
+        <span class="text-indigo-400 font-semibold">{{ m.inbound.protocol }}</span>
+        <span class="text-slate-400">{{ m.inbound.server.name }}</span>
+        <span class="font-mono text-xs text-slate-400">{{ m.xui_client_email }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

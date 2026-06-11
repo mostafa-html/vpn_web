@@ -1,0 +1,83 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Wallet — vShop{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <h1 class="text-2xl font-bold text-white">Wallet</h1>
+
+  <!-- Balance Banner -->
+  <div class="bg-gradient-to-r from-indigo-600 to-purple-700 rounded-2xl p-6 flex items-center justify-between">
+    <div>
+      <p class="text-indigo-200 text-sm uppercase tracking-wider">Available Balance</p>
+      <p class="text-4xl font-bold text-white mt-1">${{ user.wallet_balance|floatformat:2 }}</p>
+    </div>
+    <div class="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center">
+      <i class="fa-solid fa-wallet text-3xl text-white"></i>
+    </div>
+  </div>
+
+  <!-- Top Up Form -->
+  <div class="card">
+    <h2 class="text-lg font-semibold text-white mb-5">Top Up Wallet</h2>
+    <form method="post" enctype="multipart/form-data" class="space-y-4">
+      {% csrf_token %}
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm text-slate-400 mb-1.5">Amount ($)</label>
+          {{ form.amount }}
+          {% if form.amount.errors %}<p class="text-red-400 text-xs mt-1">{{ form.amount.errors.0 }}</p>{% endif %}
+        </div>
+        <div>
+          <label class="block text-sm text-slate-400 mb-1.5">Payment Reference Code</label>
+          {{ form.payment_ref_code }}
+          {% if form.payment_ref_code.errors %}<p class="text-red-400 text-xs mt-1">{{ form.payment_ref_code.errors.0 }}</p>{% endif %}
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm text-slate-400 mb-1.5">Payment Screenshot</label>
+        {{ form.screenshot }}
+        {% if form.screenshot.errors %}<p class="text-red-400 text-xs mt-1">{{ form.screenshot.errors.0 }}</p>{% endif %}
+        <p class="text-xs text-slate-500 mt-1">Upload proof of payment. Your request will be reviewed by an admin.</p>
+      </div>
+      <button type="submit" class="btn-primary"><i class="fa-solid fa-paper-plane"></i> Submit Top-Up Request</button>
+    </form>
+  </div>
+
+  <!-- Top-Up History -->
+  <div class="card">
+    <h2 class="text-lg font-semibold text-white mb-4">Top-Up History</h2>
+    {% if txns %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead><tr class="text-slate-400 text-xs uppercase border-b border-slate-700">
+          <th class="text-left pb-3">Reference</th>
+          <th class="text-right pb-3">Amount</th>
+          <th class="text-right pb-3">Date</th>
+          <th class="text-right pb-3">Status</th>
+        </tr></thead>
+        <tbody>
+          {% for tx in txns %}
+          <tr class="table-row">
+            <td class="py-3 font-mono text-slate-300">{{ tx.payment_ref_code }}</td>
+            <td class="py-3 text-right font-semibold text-white">${{ tx.amount|floatformat:2 }}</td>
+            <td class="py-3 text-right text-slate-400">{{ tx.created_at|date:'M d, Y' }}</td>
+            <td class="py-3 text-right">
+              {% if tx.status == 'PENDING' %}<span class="badge-pending">Pending</span>
+              {% elif tx.status == 'APPROVED' %}<span class="badge-approved">Approved</span>
+              {% else %}
+                <span class="badge-rejected" title="{{ tx.rejection_reason }}">Rejected</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center py-8">
+      <i class="fa-solid fa-inbox text-slate-600 text-4xl mb-3"></i>
+      <p class="text-slate-400">No top-up history yet.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
