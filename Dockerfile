@@ -24,20 +24,14 @@ COPY --from=builder /wheels /wheels
 RUN pip install --no-cache-dir --no-index --find-links=/wheels /wheels/* \
     && rm -rf /wheels
 
-RUN groupadd --gid 1000 appuser && \
-    useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser
-
 WORKDIR /app
-COPY --chown=appuser:appuser . .
+COPY . .
 
-RUN mkdir -p /app/staticfiles /app/protected_media && \
-    chown -R appuser:appuser /app/staticfiles /app/protected_media
+RUN mkdir -p /app/staticfiles /app/protected_media
 
-# Write the entrypoint directly so line endings are always LF,
-# regardless of the host OS (Windows CRLF would break /bin/sh).
+# Write entrypoint with guaranteed LF line endings (avoids Windows CRLF issues)
 RUN printf '#!/bin/sh\nset -e\necho "[entrypoint] Running migrations..."\npython manage.py migrate --noinput\necho "[entrypoint] Collecting static files..."\npython manage.py collectstatic --noinput --clear\necho "[entrypoint] Starting Gunicorn..."\nexec gunicorn vShop.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120 --access-logfile - --error-logfile -\n' > /app/docker-entrypoint.sh \
     && chmod +x /app/docker-entrypoint.sh
 
-USER appuser
 EXPOSE 8000
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
