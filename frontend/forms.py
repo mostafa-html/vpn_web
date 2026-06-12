@@ -113,21 +113,20 @@ class XuiServerForm(forms.ModelForm):
     class Meta:
         model = XuiServer
         fields = ('name', 'hostname', 'ip_address', 'api_port', 'base_path',
-                  'admin_username', 'admin_password', 'max_client_capacity',
-                  'is_active', 'use_ssl')
+                  'api_token', 'max_client_capacity', 'is_active', 'use_ssl')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         input_cls = 'w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-4 py-3 focus:outline-none focus:border-indigo-500'
-        for f in ('name', 'hostname', 'ip_address', 'api_port', 'base_path',
-                  'admin_username', 'admin_password', 'max_client_capacity'):
+        for f in ('name', 'hostname', 'ip_address', 'api_port', 'base_path', 'api_token', 'max_client_capacity'):
             self.fields[f].widget.attrs.update({'class': input_cls})
         self.fields['hostname'].widget.attrs['placeholder'] = 'e.g. gg.mx11.ir (optional, uses IP if blank)'
         self.fields['base_path'].widget.attrs['placeholder'] = 'e.g. /4bfAPdC269HYSj1c24/'
+        self.fields['api_token'].widget.attrs['placeholder'] = 'Paste token from Panel Settings -> Security -> API Token'
+        self.fields['api_token'].label = 'API Token'
         self.fields['is_active'].widget.attrs.update({'class': 'h-5 w-5 text-indigo-500'})
         self.fields['use_ssl'].widget.attrs.update({'class': 'h-5 w-5 text-indigo-500'})
         self.fields['use_ssl'].label = 'Use HTTPS (SSL)'
-        self.fields['use_ssl'].help_text = 'Enable if your 3x-ui panel uses HTTPS'
 
 
 class TransactionReviewForm(forms.Form):

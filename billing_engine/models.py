@@ -1,10 +1,10 @@
-# billing_engine/models.py
 import uuid
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.core.validators import RegexValidator
 from django.core.exceptions import ValidationError
+
 
 class CustomUser(AbstractUser):
     class Role(models.TextChoices):
@@ -30,26 +30,29 @@ class CustomUser(AbstractUser):
 class XuiServer(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255, unique=True)
-    # hostname is used for TLS SNI and URL building; falls back to ip_address if blank
     hostname = models.CharField(
         max_length=255, blank=True, default='',
         help_text='Domain name (e.g. gg.mx11.ir). Used instead of IP when set.'
     )
     ip_address = models.GenericIPAddressField(protocol='both')
     api_port = models.PositiveIntegerField()
-    # Secret base path set in 3x-ui Panel Settings → "Panel Path"
-    # Include leading and trailing slash, e.g.  /4bfAPdC269HYSj1c24/
     base_path = models.CharField(
         max_length=255, blank=True, default='/',
         help_text='3x-ui secret base path, e.g. /4bfAPdC269HYSj1c24/ (include slashes)'
     )
-    admin_username = models.CharField(max_length=150)
-    admin_password = models.CharField(max_length=255)
+    # API token from Panel Settings -> Security -> API Token (3x-ui v3+)
+    api_token = models.CharField(
+        max_length=512, blank=True, default='',
+        help_text='Bearer token from 3x-ui Panel Settings -> Security -> API Token'
+    )
+    # Kept for reference / legacy but no longer used for auth
+    admin_username = models.CharField(max_length=150, blank=True, default='')
+    admin_password = models.CharField(max_length=255, blank=True, default='')
     max_client_capacity = models.PositiveIntegerField()
     is_active = models.BooleanField(default=True)
     use_ssl = models.BooleanField(
         default=False,
-        help_text='Enable if your 3x-ui panel runs on HTTPS (self-signed certs are accepted).'
+        help_text='Enable if your 3x-ui panel runs on HTTPS.'
     )
 
     class Meta:
@@ -57,11 +60,9 @@ class XuiServer(models.Model):
         verbose_name_plural = "XUI Servers"
 
     def get_host(self):
-        """Return hostname if set, otherwise raw IP."""
         return self.hostname.strip() if self.hostname.strip() else self.ip_address
 
     def get_base_path(self):
-        """Return normalized base path with leading and trailing slash."""
         path = self.base_path.strip() or '/'
         if not path.startswith('/'):
             path = '/' + path
