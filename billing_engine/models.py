@@ -30,20 +30,47 @@ class CustomUser(AbstractUser):
 class XuiServer(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255, unique=True)
+    # hostname is used for TLS SNI and URL building; falls back to ip_address if blank
+    hostname = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text='Domain name (e.g. gg.mx11.ir). Used instead of IP when set.'
+    )
     ip_address = models.GenericIPAddressField(protocol='both')
     api_port = models.PositiveIntegerField()
+    # Secret base path set in 3x-ui Panel Settings → "Panel Path"
+    # Include leading and trailing slash, e.g.  /4bfAPdC269HYSj1c24/
+    base_path = models.CharField(
+        max_length=255, blank=True, default='/',
+        help_text='3x-ui secret base path, e.g. /4bfAPdC269HYSj1c24/ (include slashes)'
+    )
     admin_username = models.CharField(max_length=150)
-    admin_password = models.CharField(max_length=255, help_text="MUST be encrypted at rest later.")
+    admin_password = models.CharField(max_length=255)
     max_client_capacity = models.PositiveIntegerField()
     is_active = models.BooleanField(default=True)
-    use_ssl = models.BooleanField(default=False, help_text='Enable if your 3x-ui panel runs on HTTPS (self-signed certs are accepted).')
+    use_ssl = models.BooleanField(
+        default=False,
+        help_text='Enable if your 3x-ui panel runs on HTTPS (self-signed certs are accepted).'
+    )
 
     class Meta:
         verbose_name = "XUI Server"
         verbose_name_plural = "XUI Servers"
 
+    def get_host(self):
+        """Return hostname if set, otherwise raw IP."""
+        return self.hostname.strip() if self.hostname.strip() else self.ip_address
+
+    def get_base_path(self):
+        """Return normalized base path with leading and trailing slash."""
+        path = self.base_path.strip() or '/'
+        if not path.startswith('/'):
+            path = '/' + path
+        if not path.endswith('/'):
+            path = path + '/'
+        return path
+
     def __str__(self):
-        return f"{self.name} ({self.ip_address})"
+        return f"{self.name} ({self.get_host()})"
 
 
 class XuiInbound(models.Model):
@@ -96,10 +123,7 @@ class VPNPlan(models.Model):
     name = models.CharField(max_length=255)
     total_gb = models.PositiveIntegerField()
     duration_days = models.PositiveIntegerField()
-    is_visible = models.BooleanField(
-        default=True,
-        help_text="Used for safe soft-deletes to preserve historical metrics."
-    )
+    is_visible = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -122,33 +146,19 @@ class Transaction(models.Model):
         REJECTED = "REJECTED", "Rejected"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="transactions"
-    )
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="transactions")
     type = models.CharField(max_length=20, choices=TypeChoices.choices)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     screenshot = models.ImageField(upload_to="protected_media/transactions/")
     payment_ref_code = models.CharField(
-        max_length=100,
-        unique=True,
-        db_index=True,
-        validators=[
-            RegexValidator(
-                regex=r"^[A-Z0-9]+$",
-                message="Reference code must be uppercase alphanumeric characters only."
-            )
-        ]
+        max_length=100, unique=True, db_index=True,
+        validators=[RegexValidator(regex=r"^[A-Z0-9]+$", message="Uppercase alphanumeric only.")]
     )
     status = models.CharField(max_length=20, choices=StatusChoices.choices, default=StatusChoices.PENDING)
     rejection_reason = models.TextField(null=True, blank=True)
     reviewed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="reviewed_transactions"
+        settings.AUTH_USER_MODEL, null=True, blank=True,
+        on_delete=models.SET_NULL, related_name="reviewed_transactions"
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -171,15 +181,8 @@ class Transaction(models.Model):
 
 
 class ProxySubscription(models.Model):
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="subscriptions"
-    )
-    xui_client_uuid = models.CharField(
-        max_length=36,
-        help_text="Core downstream token used for client authentication across panels."
-    )
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="subscriptions")
+    xui_client_uuid = models.CharField(max_length=36)
     subscription_url = models.URLField()
     total_allocated_gb = models.PositiveIntegerField()
     used_gb = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
@@ -195,20 +198,9 @@ class ProxySubscription(models.Model):
 
 
 class SubscriptionConfigMapping(models.Model):
-    subscription = models.ForeignKey(
-        ProxySubscription,
-        on_delete=models.CASCADE,
-        related_name="mappings"
-    )
-    inbound = models.ForeignKey(
-        XuiInbound,
-        on_delete=models.CASCADE,
-        related_name="mapped_subscriptions"
-    )
-    xui_client_email = models.CharField(
-        max_length=255,
-        help_text="Automated unique email routing key required by remote XUI panels."
-    )
+    subscription = models.ForeignKey(ProxySubscription, on_delete=models.CASCADE, related_name="mappings")
+    inbound = models.ForeignKey(XuiInbound, on_delete=models.CASCADE, related_name="mapped_subscriptions")
+    xui_client_email = models.CharField(max_length=255)
 
     class Meta:
         unique_together = ("subscription", "inbound")
