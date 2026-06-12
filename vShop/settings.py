@@ -25,7 +25,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",   # <-- right after SecurityMiddleware
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -84,8 +84,6 @@ USE_TZ = True
 # ─── Static & Media ────────────────────────────────────────────────────────
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-# WhiteNoise serves and compresses collected static files directly from Gunicorn.
-# No separate Nginx needed for static file serving.
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 MEDIA_URL = "/media/"
@@ -110,7 +108,11 @@ CACHES = {
     }
 }
 
-SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+# cached_db: reads from Redis (fast) but writes through to SQLite (durable).
+# Sessions survive Redis restarts and IGNORE_EXCEPTIONS cache misses.
+# Pure cache-only sessions + IGNORE_EXCEPTIONS silently drop sessions on
+# Redis hiccups, causing CSRF token mismatch (403) on the next POST.
+SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
 SESSION_CACHE_ALIAS = "default"
 
 # ─── Celery ─────────────────────────────────────────────────────────────
