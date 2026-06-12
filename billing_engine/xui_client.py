@@ -15,10 +15,9 @@ class XuiAPIException(Exception):
 
 class XuiAPIClient:
     """
-    3x-ui API client.
-    URL layout (example base_path=/secret/):
-      login   -> https://host:port/secret/login
-      inbounds-> https://host:port/secret/panel/api/inbounds/list
+    3x-ui URL layout (example base_path=/secret/):
+      login POST -> https://host:port/secret/
+      API        -> https://host:port/secret/panel/api/...
     """
     def __init__(self, server: XuiServer):
         self.server = server
@@ -32,15 +31,19 @@ class XuiAPIClient:
         self.backoff_factor = 2
 
     def _url(self, path: str) -> str:
-        """Prepend base_path to a relative path like 'login' or 'panel/api/inbounds/list'."""
+        """Build URL for API endpoints under base_path, e.g. 'panel/api/inbounds/list'."""
         return f"{self.base_url}{self.base_path}{path.lstrip('/')}"
+
+    def _login_url(self) -> str:
+        """Login POST goes directly to the base_path (no extra segment)."""
+        return f"{self.base_url}{self.base_path}"
 
     def _get_session_cookie(self) -> Dict[str, str]:
         cached = cache.get(self.cache_key)
         if cached:
             return cached
 
-        login_url = self._url('login')
+        login_url = self._login_url()
         logger.info(f"Authenticating at {login_url}")
         try:
             response = requests.post(
@@ -52,23 +55,22 @@ class XuiAPIClient:
             )
             if response.status_code == 403:
                 raise XuiAPIException(
-                    f"Authentication failed (403 Forbidden). "
-                    f"Check username/password for server '{self.server.name}'. "
-                    f"URL tried: {login_url}"
+                    f"Authentication failed (403). Check username/password for '{self.server.name}'. "
+                    f"Login URL: {login_url}"
                 )
             response.raise_for_status()
             json_data = response.json()
             if not json_data.get("success", True):
-                raise XuiAPIException(f"Login rejected by panel: {json_data.get('msg', 'unknown reason')}")
+                raise XuiAPIException(f"Login rejected: {json_data.get('msg', 'unknown')}")
             cookie_dict = response.cookies.get_dict()
             if not cookie_dict:
-                raise XuiAPIException("Login succeeded but panel returned no session cookie.")
+                raise XuiAPIException("Login OK but no session cookie returned.")
             cache.set(self.cache_key, cookie_dict, timeout=3600)
             return cookie_dict
         except XuiAPIException:
             raise
         except RequestException as e:
-            logger.error(f"Auth connection error for server {self.server.id}: {e}")
+            logger.error(f"Auth error for server {self.server.id}: {e}")
             raise XuiAPIException(f"Connection error during auth: {e}") from e
 
     def _request(self, method: str, endpoint: str, json_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -83,7 +85,7 @@ class XuiAPIClient:
                 )
                 if response.status_code in (401, 403):
                     cache.delete(self.cache_key)
-                    raise ConnectionError("Stale or invalid session — will retry with fresh login.")
+                    raise ConnectionError("Stale session, retrying with fresh login.")
                 response.raise_for_status()
                 return response.json()
             except (Timeout, ConnectionError) as e:
@@ -96,7 +98,7 @@ class XuiAPIClient:
                 if status_code >= 500 and attempt < self.max_retries:
                     time.sleep(sleep_duration)
                     continue
-                raise XuiAPIException(f"HTTP {status_code} from panel: {e}") from e
+                raise XuiAPIException(f"HTTP {status_code}: {e}") from e
             except XuiAPIException:
                 raise
             except RequestException as e:
