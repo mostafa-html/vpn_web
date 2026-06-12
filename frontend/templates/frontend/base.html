@@ -46,7 +46,6 @@
 </head>
 <body class="text-white min-h-screen">
 
-<!-- Toast container -->
 <div id="toast-container"></div>
 
 {% if messages %}
@@ -60,29 +59,21 @@ window._djangoMessages = [
 {% endif %}
 
 {% if user.is_authenticated %}
-<!-- ====== LAYOUT WITH SIDEBAR ====== -->
 <div class="flex min-h-screen">
-
-  <!-- Sidebar -->
   <aside id="sidebar" class="w-64 bg-slate-900 border-r border-slate-800 flex flex-col fixed inset-y-0 left-0 z-40 transform -translate-x-full lg:translate-x-0 transition-transform duration-300">
-    <!-- Logo -->
     <div class="flex items-center gap-3 px-6 py-5 border-b border-slate-800">
       <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
         <i class="fa-solid fa-shield-halved text-sm"></i>
       </div>
       <span class="font-bold text-lg tracking-tight text-white">vShop</span>
     </div>
-
-    <!-- Nav -->
     <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
       {% if user.role == 'MASTER_ADMIN' %}
         <a href="{% url 'frontend:master_dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_dashboard' %}active{% endif %}"><i class="fa-solid fa-gauge-high w-5"></i> Dashboard</a>
         <a href="{% url 'frontend:master_users' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_users' %}active{% endif %}"><i class="fa-solid fa-users w-5"></i> Users</a>
         <a href="{% url 'frontend:master_servers' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_servers' %}active{% endif %}"><i class="fa-solid fa-server w-5"></i> Servers</a>
         <a href="{% url 'frontend:master_plans' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_plans' %}active{% endif %}"><i class="fa-solid fa-box-archive w-5"></i> Plans</a>
-        <a href="{% url 'frontend:master_transactions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_transactions' %}active{% endif %}">
-          <i class="fa-solid fa-receipt w-5"></i> Transactions
-        </a>
+        <a href="{% url 'frontend:master_transactions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_transactions' %}active{% endif %}"><i class="fa-solid fa-receipt w-5"></i> Transactions</a>
         <a href="{% url 'frontend:master_pricing' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_pricing' %}active{% endif %}"><i class="fa-solid fa-tags w-5"></i> Pricing</a>
         <a href="{% url 'frontend:master_subscriptions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_subscriptions' %}active{% endif %}"><i class="fa-solid fa-satellite-dish w-5"></i> Subscriptions</a>
       {% elif user.role == 'SUB_ADMIN' %}
@@ -98,8 +89,6 @@ window._djangoMessages = [
         <a href="{% url 'frontend:transactions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'transactions' %}active{% endif %}"><i class="fa-solid fa-receipt w-5"></i> Transactions</a>
       {% endif %}
     </nav>
-
-    <!-- User Footer -->
     <div class="px-4 py-4 border-t border-slate-800">
       <div class="flex items-center gap-3 mb-3">
         <div class="w-8 h-8 rounded-full bg-indigo-600/40 flex items-center justify-center text-xs font-bold text-indigo-300">{{ user.username|first|upper }}</div>
@@ -114,9 +103,7 @@ window._djangoMessages = [
     </div>
   </aside>
 
-  <!-- Main Content -->
   <div class="flex-1 lg:ml-64 flex flex-col min-h-screen">
-    <!-- Top Bar -->
     <header class="sticky top-0 z-30 bg-slate-900/80 backdrop-blur border-b border-slate-800 px-6 py-3 flex items-center justify-between">
       <button onclick="document.getElementById('sidebar').classList.toggle('-translate-x-full')" class="lg:hidden text-slate-400 hover:text-white">
         <i class="fa-solid fa-bars text-xl"></i>
@@ -131,25 +118,19 @@ window._djangoMessages = [
         <span class="hidden sm:block text-sm text-slate-400">{{ user.username }}</span>
       </div>
     </header>
-
-    <!-- Page Content -->
     <main class="flex-1 p-6">
       {% block content %}{% endblock %}
     </main>
   </div>
-
 </div>
-
-<!-- Overlay for mobile sidebar -->
 <div onclick="document.getElementById('sidebar').classList.add('-translate-x-full')" class="lg:hidden fixed inset-0 bg-black/50 z-30 hidden" id="sidebar-overlay"></div>
 
 {% else %}
-<!-- Auth-only layout -->
-<main>{% block content %}{% endblock %}</main>
+<!-- Unauthenticated layout (login / register) — no sidebar -->
+<main>{% block auth_content %}{% endblock %}</main>
 {% endif %}
 
 <script>
-// ---- Toast system ----
 function showToast(msg, type='info') {
   const c = document.getElementById('toast-container');
   const t = document.createElement('div');
@@ -162,8 +143,6 @@ function showToast(msg, type='info') {
     setTimeout(() => t.remove(), 400);
   }, 4000);
 }
-
-// Fire Django messages as toasts
 if (window._djangoMessages) {
   window._djangoMessages.forEach(m => {
     let type = 'info';
@@ -173,8 +152,6 @@ if (window._djangoMessages) {
     showToast(m.text, type);
   });
 }
-
-// ---- Copy to clipboard ----
 function copyToClipboard(text, btn) {
   navigator.clipboard.writeText(text).then(() => {
     const orig = btn.innerHTML;
@@ -183,8 +160,6 @@ function copyToClipboard(text, btn) {
     showToast('Copied to clipboard!', 'success');
   });
 }
-
-// ---- Confirm modal ----
 function confirmAction(formId, msg) {
   if (confirm(msg || 'Are you sure?')) {
     document.getElementById(formId).submit();

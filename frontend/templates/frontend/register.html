@@ -1,6 +1,6 @@
 {% extends 'frontend/base.html' %}
 {% block title %}Register — vShop{% endblock %}
-{% block content %}
+{% block auth_content %}
 <div class="min-h-screen flex items-center justify-center bg-slate-900 px-4">
   <div class="w-full max-w-md">
     <div class="text-center mb-8">
@@ -8,22 +8,37 @@
         <i class="fa-solid fa-shield-halved text-2xl"></i>
       </div>
       <h1 class="text-3xl font-bold text-white">vShop</h1>
-      <p class="text-slate-400 mt-1">Create your account</p>
+      <p class="text-slate-400 mt-1">VPN Billing Platform</p>
     </div>
     <div class="bg-slate-800 border border-slate-700 rounded-2xl p-8 shadow-2xl">
-      <h2 class="text-xl font-semibold text-white mb-6">Register</h2>
+      <h2 class="text-xl font-semibold text-white mb-6">Create Account</h2>
       <form method="post" novalidate>
         {% csrf_token %}
         <div class="space-y-4">
-          {% for field in form %}
           <div>
-            <label class="block text-sm text-slate-400 mb-1.5">{{ field.label }}</label>
-            {{ field }}
-            {% if field.errors %}
-              <p class="text-red-400 text-xs mt-1">{{ field.errors.0 }}</p>
-            {% endif %}
+            <label class="block text-sm text-slate-400 mb-1.5">Username</label>
+            {{ form.username }}
+            {% if form.username.errors %}<p class="text-red-400 text-xs mt-1">{{ form.username.errors.0 }}</p>{% endif %}
           </div>
-          {% endfor %}
+          <div>
+            <label class="block text-sm text-slate-400 mb-1.5">Email <span class="text-slate-500">(optional)</span></label>
+            {{ form.email }}
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1.5">Password</label>
+            {{ form.password1 }}
+            {% if form.password1.errors %}<p class="text-red-400 text-xs mt-1">{{ form.password1.errors.0 }}</p>{% endif %}
+          </div>
+          <div>
+            <label class="block text-sm text-slate-400 mb-1.5">Confirm Password</label>
+            {{ form.password2 }}
+            {% if form.password2.errors %}<p class="text-red-400 text-xs mt-1">{{ form.password2.errors.0 }}</p>{% endif %}
+          </div>
+          {% if form.non_field_errors %}
+            <div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-red-400 text-sm">
+              {{ form.non_field_errors.0 }}
+            </div>
+          {% endif %}
         </div>
         <button type="submit" class="w-full mt-6 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-xl transition-colors">
           Create Account
