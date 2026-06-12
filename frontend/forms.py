@@ -112,7 +112,8 @@ class VPNPlanForm(forms.ModelForm):
 class XuiServerForm(forms.ModelForm):
     class Meta:
         model = XuiServer
-        fields = ('name', 'ip_address', 'api_port', 'admin_username', 'admin_password', 'max_client_capacity', 'is_active')
+        fields = ('name', 'ip_address', 'api_port', 'admin_username', 'admin_password',
+                  'max_client_capacity', 'is_active', 'use_ssl')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -120,6 +121,9 @@ class XuiServerForm(forms.ModelForm):
         for f in ('name', 'ip_address', 'api_port', 'admin_username', 'admin_password', 'max_client_capacity'):
             self.fields[f].widget.attrs.update({'class': input_cls})
         self.fields['is_active'].widget.attrs.update({'class': 'h-5 w-5 text-indigo-500'})
+        self.fields['use_ssl'].widget.attrs.update({'class': 'h-5 w-5 text-indigo-500'})
+        self.fields['use_ssl'].label = 'Use HTTPS (SSL)'
+        self.fields['use_ssl'].help_text = 'Enable if your 3x-ui panel uses HTTPS'
 
 
 class TransactionReviewForm(forms.Form):
@@ -159,7 +163,6 @@ class PricingTierForm(forms.ModelForm):
         input_cls = 'w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-4 py-3 focus:outline-none focus:border-indigo-500'
         for f in ('target_role', 'specific_user', 'price_per_gb', 'price_per_day'):
             self.fields[f].widget.attrs.update({'class': input_cls})
-        # Only show sub-admin and master-admin users as options for specific_user
         self.fields['specific_user'].queryset = CustomUser.objects.filter(
             role__in=[CustomUser.Role.SUB_ADMIN, CustomUser.Role.END_USER]
         )

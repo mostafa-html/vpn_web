@@ -36,6 +36,7 @@ class XuiServer(models.Model):
     admin_password = models.CharField(max_length=255, help_text="MUST be encrypted at rest later.")
     max_client_capacity = models.PositiveIntegerField()
     is_active = models.BooleanField(default=True)
+    use_ssl = models.BooleanField(default=False, help_text='Enable if your 3x-ui panel runs on HTTPS (self-signed certs are accepted).')
 
     class Meta:
         verbose_name = "XUI Server"
@@ -92,14 +93,11 @@ class PricingTier(models.Model):
 
 
 class VPNPlan(models.Model):
-    """
-    Predefined commercial packages available for user purchase.
-    """
     name = models.CharField(max_length=255)
     total_gb = models.PositiveIntegerField()
     duration_days = models.PositiveIntegerField()
     is_visible = models.BooleanField(
-        default=True, 
+        default=True,
         help_text="Used for safe soft-deletes to preserve historical metrics."
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -114,9 +112,6 @@ class VPNPlan(models.Model):
 
 
 class Transaction(models.Model):
-    """
-    Immutable financial audit trail for user balance top-ups and plan purchases.
-    """
     class TypeChoices(models.TextChoices):
         WALLET_TOPUP = "WALLET_TOPUP", "Wallet Top-up"
         PLAN_PURCHASE = "PLAN_PURCHASE", "Plan Purchase"
@@ -176,9 +171,6 @@ class Transaction(models.Model):
 
 
 class ProxySubscription(models.Model):
-    """
-    The source-of-truth quantitative and temporal allocation pool for a user's proxy access.
-    """
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -193,11 +185,8 @@ class ProxySubscription(models.Model):
     used_gb = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     expires_at = models.DateTimeField()
     is_active = models.BooleanField(default=True)
-
-    # Traffic Reset Patch Storage
     last_known_up_bytes = models.BigIntegerField(default=0)
     last_known_down_bytes = models.BigIntegerField(default=0)
-
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -206,10 +195,6 @@ class ProxySubscription(models.Model):
 
 
 class SubscriptionConfigMapping(models.Model):
-    """
-    Architectural Junction Bridge: Maps a single user data pool to multiple 
-    inbound protocols and remote panels while generating structured non-colliding client identifiers.
-    """
     subscription = models.ForeignKey(
         ProxySubscription,
         on_delete=models.CASCADE,
