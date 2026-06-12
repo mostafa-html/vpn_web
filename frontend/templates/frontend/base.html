@@ -21,89 +21,153 @@
   </script>
   <style>
     body { background-color: #0f172a; }
-    .sidebar-link { @apply flex items-center gap-3 px-4 py-2.5 rounded-lg text-slate-300 hover:bg-indigo-600/20 hover:text-indigo-400 transition-all duration-200; }
-    .sidebar-link.active { @apply bg-indigo-600/30 text-indigo-400; }
+
+    /* ---- Sidebar ---- */
+    .sidebar-link {
+      display: flex; align-items: center; gap: 0.75rem;
+      padding: 0.6rem 0.875rem; border-radius: 0.5rem;
+      color: #94a3b8; font-size: 0.875rem; font-weight: 500;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+    .sidebar-link:hover { background: rgba(99,102,241,.15); color: #a5b4fc; }
+    .sidebar-link.active { background: rgba(99,102,241,.25); color: #818cf8; }
+    .sidebar-link i { width: 1.1rem; text-align: center; flex-shrink: 0; font-size: 0.9rem; }
+
+    .sidebar-section {
+      padding: 0.25rem 0.75rem 0.15rem;
+      font-size: 0.65rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: #475569; margin-top: 0.75rem;
+    }
+
+    /* ---- Cards / badges / buttons ---- */
     .card { @apply bg-slate-800 border border-slate-700 rounded-xl p-5; }
-    .badge-pending { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-500/20 text-yellow-400; }
-    .badge-approved { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-green-500/20 text-green-400; }
-    .badge-rejected { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-red-500/20 text-red-400; }
-    .badge-active { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-500/20 text-blue-400; }
-    .badge-expired { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-500/20 text-slate-400; }
+    .badge-pending  { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-500/20 text-yellow-400; }
+    .badge-approved { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-green-500/20  text-green-400; }
+    .badge-rejected { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-red-500/20    text-red-400; }
+    .badge-active   { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-500/20   text-blue-400; }
+    .badge-expired  { @apply px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-500/20  text-slate-400; }
     .btn-primary { @apply bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-5 py-2.5 rounded-lg transition-colors duration-200 inline-flex items-center gap-2; }
-    .btn-danger { @apply bg-red-600/20 hover:bg-red-600/40 text-red-400 font-semibold px-4 py-2 rounded-lg transition-colors duration-200 inline-flex items-center gap-2; }
+    .btn-danger  { @apply bg-red-600/20 hover:bg-red-600/40 text-red-400 font-semibold px-4 py-2 rounded-lg transition-colors duration-200 inline-flex items-center gap-2; }
     .btn-success { @apply bg-green-600/20 hover:bg-green-600/40 text-green-400 font-semibold px-4 py-2 rounded-lg transition-colors duration-200 inline-flex items-center gap-2; }
     .table-row { @apply border-b border-slate-700 hover:bg-slate-700/40 transition-colors; }
     .stat-card { @apply card flex items-center gap-4; }
-    #toast-container { position: fixed; top: 1.25rem; right: 1.25rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.5rem; }
-    .toast { padding: 0.75rem 1.25rem; border-radius: 0.5rem; font-size: 0.875rem; font-weight: 500; opacity: 0; transform: translateX(100%); transition: all 0.35s ease; max-width: 22rem; }
-    .toast.show { opacity: 1; transform: translateX(0); }
-    .toast-success { background: #14532d; color: #86efac; border: 1px solid #166534; }
-    .toast-error   { background: #450a0a; color: #fca5a5; border: 1px solid #7f1d1d; }
-    .toast-info    { background: #1e1b4b; color: #a5b4fc; border: 1px solid #3730a3; }
-    .toast-warning { background: #451a03; color: #fcd34d; border: 1px solid #92400e; }
+
+    /* ---- Toasts ---- */
+    #toast-container { position:fixed;top:1.25rem;right:1.25rem;z-index:9999;display:flex;flex-direction:column;gap:.5rem; }
+    .toast { padding:.75rem 1.25rem;border-radius:.5rem;font-size:.875rem;font-weight:500;opacity:0;transform:translateX(100%);transition:all .35s ease;max-width:22rem; }
+    .toast.show { opacity:1;transform:translateX(0); }
+    .toast-success { background:#14532d;color:#86efac;border:1px solid #166534; }
+    .toast-error   { background:#450a0a;color:#fca5a5;border:1px solid #7f1d1d; }
+    .toast-info    { background:#1e1b4b;color:#a5b4fc;border:1px solid #3730a3; }
+    .toast-warning { background:#451a03;color:#fcd34d;border:1px solid #92400e; }
   </style>
   {% block extra_head %}{% endblock %}
 </head>
 <body class="text-white min-h-screen">
 
 <div id="toast-container"></div>
-
 {% if messages %}
 <script>
 window._djangoMessages = [
-  {% for m in messages %}
-  { level: "{{ m.tags }}", text: "{{ m.message|escapejs }}" },
-  {% endfor %}
+  {% for m in messages %}{ level:"{{ m.tags }}",text:"{{ m.message|escapejs }}" },{% endfor %}
 ];
 </script>
 {% endif %}
 
 {% if user.is_authenticated %}
 <div class="flex min-h-screen">
-  <aside id="sidebar" class="w-64 bg-slate-900 border-r border-slate-800 flex flex-col fixed inset-y-0 left-0 z-40 transform -translate-x-full lg:translate-x-0 transition-transform duration-300">
-    <div class="flex items-center gap-3 px-6 py-5 border-b border-slate-800">
-      <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-        <i class="fa-solid fa-shield-halved text-sm"></i>
+
+  <!-- Sidebar -->
+  <aside id="sidebar" class="w-60 bg-slate-900 border-r border-slate-800 flex flex-col fixed inset-y-0 left-0 z-40 transform -translate-x-full lg:translate-x-0 transition-transform duration-300">
+
+    <!-- Logo -->
+    <div class="flex items-center gap-3 px-5 py-4 border-b border-slate-800">
+      <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shrink-0">
+        <i class="fa-solid fa-shield-halved text-sm text-white"></i>
       </div>
-      <span class="font-bold text-lg tracking-tight text-white">vShop</span>
+      <span class="font-bold text-base tracking-tight text-white">vShop</span>
     </div>
-    <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+
+    <!-- Nav -->
+    <nav class="flex-1 px-2 py-3 overflow-y-auto space-y-0.5">
       {% if user.role == 'MASTER_ADMIN' %}
-        <a href="{% url 'frontend:master_dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_dashboard' %}active{% endif %}"><i class="fa-solid fa-gauge-high w-5"></i> Dashboard</a>
-        <a href="{% url 'frontend:master_users' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_users' %}active{% endif %}"><i class="fa-solid fa-users w-5"></i> Users</a>
-        <a href="{% url 'frontend:master_servers' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_servers' %}active{% endif %}"><i class="fa-solid fa-server w-5"></i> Servers</a>
-        <a href="{% url 'frontend:master_plans' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_plans' %}active{% endif %}"><i class="fa-solid fa-box-archive w-5"></i> Plans</a>
-        <a href="{% url 'frontend:master_transactions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_transactions' %}active{% endif %}"><i class="fa-solid fa-receipt w-5"></i> Transactions</a>
-        <a href="{% url 'frontend:master_pricing' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_pricing' %}active{% endif %}"><i class="fa-solid fa-tags w-5"></i> Pricing</a>
-        <a href="{% url 'frontend:master_subscriptions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_subscriptions' %}active{% endif %}"><i class="fa-solid fa-satellite-dish w-5"></i> Subscriptions</a>
+        <p class="sidebar-section">Overview</p>
+        <a href="{% url 'frontend:master_dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_dashboard' %}active{% endif %}">
+          <i class="fa-solid fa-gauge-high"></i> Dashboard
+        </a>
+        <p class="sidebar-section">Management</p>
+        <a href="{% url 'frontend:master_users' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_users' %}active{% endif %}">
+          <i class="fa-solid fa-users"></i> Users
+        </a>
+        <a href="{% url 'frontend:master_servers' %}" class="sidebar-link {% if 'master_server' in request.resolver_match.url_name %}active{% endif %}">
+          <i class="fa-solid fa-server"></i> Servers
+        </a>
+        <a href="{% url 'frontend:master_subscriptions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_subscriptions' %}active{% endif %}">
+          <i class="fa-solid fa-satellite-dish"></i> Subscriptions
+        </a>
+        <p class="sidebar-section">Billing</p>
+        <a href="{% url 'frontend:master_plans' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_plans' %}active{% endif %}">
+          <i class="fa-solid fa-box-archive"></i> Plans
+        </a>
+        <a href="{% url 'frontend:master_transactions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_transactions' %}active{% endif %}">
+          <i class="fa-solid fa-receipt"></i> Transactions
+        </a>
+        <a href="{% url 'frontend:master_pricing' %}" class="sidebar-link {% if request.resolver_match.url_name == 'master_pricing' %}active{% endif %}">
+          <i class="fa-solid fa-tags"></i> Pricing
+        </a>
       {% elif user.role == 'SUB_ADMIN' %}
-        <a href="{% url 'frontend:subadmin_dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'subadmin_dashboard' %}active{% endif %}"><i class="fa-solid fa-gauge w-5"></i> Dashboard</a>
-        <a href="{% url 'frontend:subadmin_users' %}" class="sidebar-link {% if request.resolver_match.url_name == 'subadmin_users' %}active{% endif %}"><i class="fa-solid fa-users w-5"></i> My Users</a>
-        <a href="{% url 'frontend:subadmin_create_user' %}" class="sidebar-link {% if request.resolver_match.url_name == 'subadmin_create_user' %}active{% endif %}"><i class="fa-solid fa-user-plus w-5"></i> Add User</a>
-        <a href="{% url 'frontend:wallet' %}" class="sidebar-link {% if request.resolver_match.url_name == 'wallet' %}active{% endif %}"><i class="fa-solid fa-wallet w-5"></i> Wallet</a>
+        <a href="{% url 'frontend:subadmin_dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'subadmin_dashboard' %}active{% endif %}">
+          <i class="fa-solid fa-gauge"></i> Dashboard
+        </a>
+        <a href="{% url 'frontend:subadmin_users' %}" class="sidebar-link {% if request.resolver_match.url_name == 'subadmin_users' %}active{% endif %}">
+          <i class="fa-solid fa-users"></i> My Users
+        </a>
+        <a href="{% url 'frontend:subadmin_create_user' %}" class="sidebar-link {% if request.resolver_match.url_name == 'subadmin_create_user' %}active{% endif %}">
+          <i class="fa-solid fa-user-plus"></i> Add User
+        </a>
+        <a href="{% url 'frontend:wallet' %}" class="sidebar-link {% if request.resolver_match.url_name == 'wallet' %}active{% endif %}">
+          <i class="fa-solid fa-wallet"></i> Wallet
+        </a>
       {% else %}
-        <a href="{% url 'frontend:dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}"><i class="fa-solid fa-gauge w-5"></i> Dashboard</a>
-        <a href="{% url 'frontend:plans' %}" class="sidebar-link {% if request.resolver_match.url_name == 'plans' %}active{% endif %}"><i class="fa-solid fa-box-archive w-5"></i> Plans</a>
-        <a href="{% url 'frontend:subscriptions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'subscriptions' %}active{% endif %}"><i class="fa-solid fa-satellite-dish w-5"></i> Subscriptions</a>
-        <a href="{% url 'frontend:wallet' %}" class="sidebar-link {% if request.resolver_match.url_name == 'wallet' %}active{% endif %}"><i class="fa-solid fa-wallet w-5"></i> Wallet</a>
-        <a href="{% url 'frontend:transactions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'transactions' %}active{% endif %}"><i class="fa-solid fa-receipt w-5"></i> Transactions</a>
+        <a href="{% url 'frontend:dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+          <i class="fa-solid fa-gauge"></i> Dashboard
+        </a>
+        <a href="{% url 'frontend:plans' %}" class="sidebar-link {% if request.resolver_match.url_name == 'plans' %}active{% endif %}">
+          <i class="fa-solid fa-box-archive"></i> Plans
+        </a>
+        <a href="{% url 'frontend:subscriptions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'subscriptions' %}active{% endif %}">
+          <i class="fa-solid fa-satellite-dish"></i> Subscriptions
+        </a>
+        <a href="{% url 'frontend:wallet' %}" class="sidebar-link {% if request.resolver_match.url_name == 'wallet' %}active{% endif %}">
+          <i class="fa-solid fa-wallet"></i> Wallet
+        </a>
+        <a href="{% url 'frontend:transactions' %}" class="sidebar-link {% if request.resolver_match.url_name == 'transactions' %}active{% endif %}">
+          <i class="fa-solid fa-receipt"></i> Transactions
+        </a>
       {% endif %}
     </nav>
-    <div class="px-4 py-4 border-t border-slate-800">
-      <div class="flex items-center gap-3 mb-3">
-        <div class="w-8 h-8 rounded-full bg-indigo-600/40 flex items-center justify-center text-xs font-bold text-indigo-300">{{ user.username|first|upper }}</div>
+
+    <!-- User footer -->
+    <div class="px-3 py-3 border-t border-slate-800">
+      <div class="flex items-center gap-2.5 mb-2">
+        <div class="w-7 h-7 rounded-full bg-indigo-600/40 flex items-center justify-center text-xs font-bold text-indigo-300 shrink-0">
+          {{ user.username|first|upper }}
+        </div>
         <div class="overflow-hidden">
-          <p class="text-sm font-medium text-white truncate">{{ user.username }}</p>
-          <p class="text-xs text-slate-400">{{ user.get_role_display }}</p>
+          <p class="text-sm font-medium text-white truncate leading-tight">{{ user.username }}</p>
+          <p class="text-xs text-slate-400 leading-tight">{{ user.get_role_display }}</p>
         </div>
       </div>
-      <a href="{% url 'frontend:logout' %}" class="flex items-center gap-2 text-sm text-slate-400 hover:text-red-400 transition-colors">
+      <a href="{% url 'frontend:logout' %}" class="sidebar-link text-slate-500 hover:text-red-400 text-xs px-2 py-1.5">
         <i class="fa-solid fa-right-from-bracket"></i> Logout
       </a>
     </div>
   </aside>
 
-  <div class="flex-1 lg:ml-64 flex flex-col min-h-screen">
+  <!-- Main content -->
+  <div class="flex-1 lg:ml-60 flex flex-col min-h-screen">
     <header class="sticky top-0 z-30 bg-slate-900/80 backdrop-blur border-b border-slate-800 px-6 py-3 flex items-center justify-between">
       <button onclick="document.getElementById('sidebar').classList.toggle('-translate-x-full')" class="lg:hidden text-slate-400 hover:text-white">
         <i class="fa-solid fa-bars text-xl"></i>
@@ -118,53 +182,20 @@ window._djangoMessages = [
         <span class="hidden sm:block text-sm text-slate-400">{{ user.username }}</span>
       </div>
     </header>
-    <main class="flex-1 p-6">
-      {% block content %}{% endblock %}
-    </main>
+    <main class="flex-1 p-6">{% block content %}{% endblock %}</main>
   </div>
 </div>
 <div onclick="document.getElementById('sidebar').classList.add('-translate-x-full')" class="lg:hidden fixed inset-0 bg-black/50 z-30 hidden" id="sidebar-overlay"></div>
 
 {% else %}
-<!-- Unauthenticated layout (login / register) — no sidebar -->
 <main>{% block auth_content %}{% endblock %}</main>
 {% endif %}
 
 <script>
-function showToast(msg, type='info') {
-  const c = document.getElementById('toast-container');
-  const t = document.createElement('div');
-  t.className = `toast toast-${type}`;
-  t.innerHTML = `<span>${msg}</span>`;
-  c.appendChild(t);
-  requestAnimationFrame(() => { requestAnimationFrame(() => t.classList.add('show')); });
-  setTimeout(() => {
-    t.classList.remove('show');
-    setTimeout(() => t.remove(), 400);
-  }, 4000);
-}
-if (window._djangoMessages) {
-  window._djangoMessages.forEach(m => {
-    let type = 'info';
-    if (m.level.includes('success')) type = 'success';
-    else if (m.level.includes('error'))   type = 'error';
-    else if (m.level.includes('warning')) type = 'warning';
-    showToast(m.text, type);
-  });
-}
-function copyToClipboard(text, btn) {
-  navigator.clipboard.writeText(text).then(() => {
-    const orig = btn.innerHTML;
-    btn.innerHTML = '<i class="fa-solid fa-check text-green-400"></i>';
-    setTimeout(() => { btn.innerHTML = orig; }, 1500);
-    showToast('Copied to clipboard!', 'success');
-  });
-}
-function confirmAction(formId, msg) {
-  if (confirm(msg || 'Are you sure?')) {
-    document.getElementById(formId).submit();
-  }
-}
+function showToast(msg,type='info'){const c=document.getElementById('toast-container');const t=document.createElement('div');t.className=`toast toast-${type}`;t.innerHTML=`<span>${msg}</span>`;c.appendChild(t);requestAnimationFrame(()=>{requestAnimationFrame(()=>t.classList.add('show'));});setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),400);},4000);}
+if(window._djangoMessages){window._djangoMessages.forEach(m=>{let type='info';if(m.level.includes('success'))type='success';else if(m.level.includes('error'))type='error';else if(m.level.includes('warning'))type='warning';showToast(m.text,type);});}
+function copyToClipboard(text,btn){navigator.clipboard.writeText(text).then(()=>{const orig=btn.innerHTML;btn.innerHTML='<i class="fa-solid fa-check text-green-400"></i>';setTimeout(()=>{btn.innerHTML=orig;},1500);showToast('Copied!','success');});}
+function confirmAction(formId,msg){if(confirm(msg||'Are you sure?')){document.getElementById(formId).submit();}}
 </script>
 {% block extra_js %}{% endblock %}
 </body>

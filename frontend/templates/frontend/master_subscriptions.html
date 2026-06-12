@@ -2,52 +2,123 @@
 {% block title %}Subscriptions — vShop Admin{% endblock %}
 {% block content %}
 <div class="space-y-6">
-  <div class="flex items-center justify-between flex-wrap gap-3">
-    <h1 class="text-2xl font-bold text-white">All Subscriptions</h1>
-    <form method="get" class="flex gap-2">
-      <select name="status" onchange="this.form.submit()" class="bg-slate-800 border border-slate-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500">
+  <h1 class="text-2xl font-bold text-white">Subscriptions</h1>
+
+  <!-- Search & Filter -->
+  <form method="get" class="flex flex-wrap gap-3 items-end">
+    <div class="flex-1 min-w-[200px]">
+      <label class="block text-xs text-slate-400 mb-1">Search</label>
+      <input type="text" name="q" value="{{ search }}"
+        placeholder="Username, UUID or email…"
+        class="w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-indigo-500">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">Status</label>
+      <select name="status" class="bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm">
         <option value="">All</option>
         <option value="active" {% if status_filter == 'active' %}selected{% endif %}>Active</option>
         <option value="expired" {% if status_filter == 'expired' %}selected{% endif %}>Expired</option>
       </select>
-    </form>
-  </div>
-  <div class="card">
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs uppercase border-b border-slate-700">
-          <th class="text-left pb-3">User</th>
-          <th class="text-left pb-3">UUID</th>
-          <th class="text-right pb-3">Used / Total</th>
-          <th class="text-right pb-3">Expires</th>
-          <th class="text-right pb-3">Status</th>
-          <th class="text-right pb-3">Actions</th>
-        </tr></thead>
-        <tbody>
-          {% for sub in subs %}
-          <tr class="table-row">
-            <td class="py-3 font-medium text-white">{{ sub.user.username }}</td>
-            <td class="py-3 font-mono text-xs text-slate-400">{{ sub.xui_client_uuid|slice:':12' }}...</td>
-            <td class="py-3 text-right text-slate-300">{{ sub.used_gb|floatformat:1 }} / {{ sub.total_allocated_gb }} GB</td>
-            <td class="py-3 text-right text-slate-400">{{ sub.expires_at|date:'M d, Y' }}</td>
-            <td class="py-3 text-right">{% if sub.is_active %}<span class="badge-active">Active</span>{% else %}<span class="badge-expired">Expired</span>{% endif %}</td>
-            <td class="py-3 text-right">
-              {% if sub.is_active %}
-              <form method="post" action="{% url 'frontend:master_deprovision' sub.id %}" style="display:inline">
-                {% csrf_token %}
-                <button type="submit" onclick="return confirm('Deprovision this subscription?')" class="text-xs text-red-400 hover:text-red-300">
-                  <i class="fa-solid fa-ban"></i> Deprovision
-                </button>
-              </form>
-              {% else %}—{% endif %}
-            </td>
-          </tr>
-          {% empty %}
-          <tr><td colspan="6" class="py-10 text-center text-slate-400">No subscriptions found.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
     </div>
+    <button type="submit" class="btn-primary text-sm py-2"><i class="fa-solid fa-search"></i> Search</button>
+    {% if search or status_filter %}
+    <a href="{% url 'frontend:master_subscriptions' %}" class="text-slate-400 hover:text-white text-sm py-2 px-3">Clear</a>
+    {% endif %}
+  </form>
+
+  <p class="text-slate-400 text-sm">{{ subs|length }} subscription(s)</p>
+
+  <div class="card overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-slate-400 border-b border-slate-700 text-xs uppercase">
+        <tr>
+          <th class="text-left py-3 px-4">User</th>
+          <th class="text-left py-3 px-4">UUID</th>
+          <th class="text-left py-3 px-4">Traffic (GB)</th>
+          <th class="text-left py-3 px-4">Expires</th>
+          <th class="text-left py-3 px-4">Status</th>
+          <th class="text-left py-3 px-4">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-700">
+        {% for sub in subs %}
+        <tr class="hover:bg-slate-700/30 text-slate-300">
+          <td class="py-3 px-4 font-medium text-white">{{ sub.user.username }}</td>
+          <td class="py-3 px-4 font-mono text-xs text-slate-400">{{ sub.xui_client_uuid|slice:":16" }}…</td>
+          <td class="py-3 px-4">
+            {% if sub.total_allocated_gb %}{{ sub.used_gb|floatformat:1 }} / {{ sub.total_allocated_gb }} GB
+            {% else %}<span class="text-slate-500">∞</span>{% endif %}
+          </td>
+          <td class="py-3 px-4 text-xs">{{ sub.expires_at|date:"Y-m-d" }}</td>
+          <td class="py-3 px-4">
+            {% if sub.is_active %}<span class="badge-approved">Active</span>
+            {% else %}<span class="badge-expired">Expired</span>{% endif %}
+          </td>
+          <td class="py-3 px-4">
+            <button onclick="openManage('{{ sub.id }}','{{ sub.user.username|escapejs }}','{{ sub.total_allocated_gb }}','{{ sub.expires_at|date:"Y-m-d" }}','{{ sub.user.username|escapejs }}','{{ sub.is_active|yesno:"1,0" }}')"
+              class="text-xs text-indigo-400 hover:text-indigo-300 border border-indigo-700 rounded px-2 py-1">
+              <i class="fa-solid fa-pen-to-square"></i> Edit
+            </button>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="text-center py-10 text-slate-500">No subscriptions found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 </div>
+
+<!-- Manage Modal -->
+<div id="manage-modal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-md shadow-2xl">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+      <h2 class="text-white font-semibold">Edit: <span id="modal-name" class="text-indigo-400"></span></h2>
+      <button onclick="closeManage()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <form id="manage-form" method="post" action="" class="px-6 py-5 space-y-4">
+      {% csrf_token %}
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Owner Username</label>
+        <input type="text" name="owner_username" id="modal-owner"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Traffic Limit (GB) — 0 = unlimited</label>
+        <input type="number" name="total_allocated_gb" id="modal-gb" min="0"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm">
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Expires At</label>
+        <input type="date" name="expires_at" id="modal-expiry"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm">
+      </div>
+      <div class="flex items-center gap-2">
+        <input type="checkbox" name="is_active" id="modal-active" value="1">
+        <label for="modal-active" class="text-sm text-slate-300">Active</label>
+      </div>
+      <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn-primary flex-1 justify-center">Save</button>
+        <button type="button" onclick="closeManage()" class="flex-1 text-center border border-slate-600 text-slate-300 hover:text-white rounded-lg py-2 text-sm">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% block extra_js %}
+<script>
+function openManage(subId, name, gb, expiry, owner, isActive) {
+  document.getElementById('modal-name').textContent = name;
+  document.getElementById('modal-gb').value = gb;
+  document.getElementById('modal-expiry').value = expiry;
+  document.getElementById('modal-owner').value = (owner === '__imported__') ? '' : owner;
+  document.getElementById('modal-active').checked = isActive === '1';
+  document.getElementById('manage-form').action = '/master/subscriptions/' + subId + '/edit/';
+  document.getElementById('manage-modal').classList.remove('hidden');
+}
+function closeManage() {
+  document.getElementById('manage-modal').classList.add('hidden');
+}
+</script>
+{% endblock %}
 {% endblock %}

@@ -238,7 +238,7 @@ def subadmin_create_user(request):
 
 
 # ---------------------------------------------------------------------------
-# MASTER ADMIN — helpers
+# MASTER ADMIN - helpers
 # ---------------------------------------------------------------------------
 
 def _sync_server_inbounds_and_clients(server):
@@ -261,11 +261,13 @@ def _sync_server_inbounds_and_clients(server):
         }
     )
 
+    # Build map: uuid -> ProxySubscription (already tracked)
     managed_uuids = set(ProxySubscription.objects.values_list('xui_client_uuid', flat=True))
 
+    # Collect inbound objects first
+    inbound_map = {}  # xui_inbound_id -> XuiInbound
     for ib in result.get('obj', []):
         stream = _parse_field(ib.get('streamSettings', {}))
-
         inbound_obj, _ = XuiInbound.objects.get_or_create(
             server=server,
             xui_inbound_id=ib['id'],
@@ -275,35 +277,48 @@ def _sync_server_inbounds_and_clients(server):
                 'is_available_for_purchase': True,
             }
         )
+        inbound_map[ib['id']] = (inbound_obj, ib)
         inbound_count += 1
 
-        # settings is a dict in v3.3.1, may be a JSON string in older versions
+    # Group clients by UUID across all inbounds
+    # uuid -> {client_data, inbound_ids[]}
+    uuid_to_inbounds = {}
+    for xui_id, (inbound_obj, ib) in inbound_map.items():
         settings_obj = _parse_field(ib.get('settings', {}))
-
         for cli in settings_obj.get('clients', []):
             uuid = cli.get('id', '')
-            email = cli.get('email', '')
-            if not uuid or uuid in managed_uuids:
+            if not uuid:
                 continue
-            try:
-                sub = ProxySubscription.objects.create(
-                    user=import_user,
-                    xui_client_uuid=uuid,
-                    subscription_url='',
-                    total_allocated_gb=0,
-                    expires_at=timezone.now(),
-                    is_active=cli.get('enable', True),
-                )
+            if uuid not in uuid_to_inbounds:
+                uuid_to_inbounds[uuid] = {'cli': cli, 'inbounds': []}
+            uuid_to_inbounds[uuid]['inbounds'].append(inbound_obj)
+
+    # Create one ProxySubscription per unique UUID, map to all inbounds
+    for uuid, data in uuid_to_inbounds.items():
+        if uuid in managed_uuids:
+            continue
+        cli = data['cli']
+        email = cli.get('email', '')
+        try:
+            sub = ProxySubscription.objects.create(
+                user=import_user,
+                xui_client_uuid=uuid,
+                subscription_url='',
+                total_allocated_gb=0,
+                expires_at=timezone.now(),
+                is_active=cli.get('enable', True),
+            )
+            for inbound_obj in data['inbounds']:
                 SubscriptionConfigMapping.objects.get_or_create(
                     subscription=sub,
                     inbound=inbound_obj,
                     defaults={'xui_client_email': email},
                 )
-                managed_uuids.add(uuid)
-                client_count += 1
-            except Exception as e:
-                errors.append(f'Client {uuid[:8]}: {e}')
-                logger.error('Import client error: %s', e)
+            managed_uuids.add(uuid)
+            client_count += 1
+        except Exception as e:
+            errors.append(f'Client {uuid[:8]}: {e}')
+            logger.error('Import client error: %s', e)
 
     return inbound_count, client_count, errors
 
@@ -377,42 +392,84 @@ def master_server_toggle(request, server_id):
 
 @require_role('MASTER_ADMIN')
 def master_server_clients(request, server_id):
+    """Show all unique clients on a server grouped by UUID (not per-inbound)."""
     server = get_object_or_404(XuiServer, id=server_id)
     clients = []
     error = None
+    search = request.GET.get('q', '').strip().lower()
 
-    managed_uuids = {
-        m.subscription.xui_client_uuid: m.subscription
-        for m in SubscriptionConfigMapping.objects.select_related(
-            'subscription', 'subscription__user', 'inbound'
-        ).filter(inbound__server=server)
-    }
+    # Map uuid -> subscription for tracked clients
+    managed_map = {}
+    for m in SubscriptionConfigMapping.objects.select_related(
+        'subscription', 'subscription__user', 'inbound'
+    ).filter(inbound__server=server):
+        uuid = m.subscription.xui_client_uuid
+        if uuid not in managed_map:
+            managed_map[uuid] = {
+                'subscription': m.subscription,
+                'owner': m.subscription.user,
+                'inbounds': [],
+            }
+        managed_map[uuid]['inbounds'].append(m.inbound)
 
     try:
         result = XuiAPIClient(server).get_inbounds()
+        seen_uuids = set()
+        uuid_inbound_map = {}  # uuid -> list of inbound tags
+        uuid_client_map = {}   # uuid -> client dict
+
         for inbound in result.get('obj', []):
-            # Fix: use _parse_field so both dict and JSON string are handled
             settings_obj = _parse_field(inbound.get('settings', {}))
+            tag = inbound.get('tag') or inbound.get('remark') or f"Inbound {inbound.get('id')}"
+            protocol = inbound.get('protocol', '?').upper()
             for cli in settings_obj.get('clients', []):
                 uuid = cli.get('id', '')
-                clients.append({
-                    'inbound_id': inbound.get('id'),
-                    'inbound_tag': inbound.get('tag', '?'),
-                    'protocol': inbound.get('protocol', '?').upper(),
-                    'uuid': uuid,
-                    'email': cli.get('email', ''),
-                    'enable': cli.get('enable', True),
-                    'total_gb': round((inbound.get('up', 0) + inbound.get('down', 0)) / (1024 ** 3), 2),
-                    'expiry': cli.get('expiryTime', 0),
-                    'subscription': managed_uuids.get(uuid),
-                })
+                if not uuid:
+                    continue
+                if uuid not in uuid_inbound_map:
+                    uuid_inbound_map[uuid] = []
+                    uuid_client_map[uuid] = cli
+                uuid_inbound_map[uuid].append(f"{protocol}/{tag}")
+
+        for uuid, inbound_list in uuid_inbound_map.items():
+            cli = uuid_client_map[uuid]
+            email = cli.get('email', '')
+            managed = managed_map.get(uuid)
+            owner_name = managed['owner'].username if managed else None
+            display_name = owner_name if (owner_name and owner_name != '__imported__') else email or uuid[:8]
+
+            entry = {
+                'uuid': uuid,
+                'email': email,
+                'display_name': display_name,
+                'enable': cli.get('enable', True),
+                'expiry': cli.get('expiryTime', 0),
+                'inbounds': ', '.join(inbound_list),
+                'inbound_count': len(inbound_list),
+                'subscription': managed['subscription'] if managed else None,
+                'owner': managed['owner'] if managed else None,
+                'total_gb': cli.get('totalGB', 0),
+            }
+
+            # Apply search filter
+            if search:
+                haystack = f"{email} {display_name} {uuid}".lower()
+                if search not in haystack:
+                    continue
+
+            clients.append(entry)
+
     except XuiAPIException as e:
         error = str(e)
+
+    clients.sort(key=lambda x: x['display_name'].lower())
 
     return render(request, 'frontend/master_server_clients.html', {
         'server': server,
         'clients': clients,
         'error': error,
+        'search': search,
+        'total_count': len(clients),
         'managed_count': sum(1 for c in clients if c['subscription']),
         'untracked_count': sum(1 for c in clients if not c['subscription']),
     })
@@ -509,14 +566,23 @@ def master_pricing_delete(request, tier_id):
 
 @require_role('MASTER_ADMIN')
 def master_subscriptions(request):
-    subs = ProxySubscription.objects.select_related('user').order_by('-created_at')
+    search = request.GET.get('q', '').strip()
     status_filter = request.GET.get('status', '')
+    subs = ProxySubscription.objects.select_related('user').order_by('-created_at')
     if status_filter == 'active':
         subs = subs.filter(is_active=True)
     elif status_filter == 'expired':
         subs = subs.filter(is_active=False)
+    if search:
+        subs = subs.filter(
+            Q(user__username__icontains=search) |
+            Q(xui_client_uuid__icontains=search) |
+            Q(mappings__xui_client_email__icontains=search)
+        ).distinct()
     return render(request, 'frontend/master_subscriptions.html', {
-        'subs': subs, 'status_filter': status_filter,
+        'subs': subs,
+        'status_filter': status_filter,
+        'search': search,
     })
 
 
@@ -527,4 +593,50 @@ def master_deprovision(request, sub_id):
         sub.is_active = False
         sub.save(update_fields=['is_active', 'updated_at'])
         messages.warning(request, 'Subscription deprovisioned.')
+    return redirect('frontend:master_subscriptions')
+
+
+@require_role('MASTER_ADMIN')
+def master_subscription_edit(request, sub_id):
+    """Edit traffic allocation, expiry, owner and active state of a subscription."""
+    sub = get_object_or_404(ProxySubscription, id=sub_id)
+    if request.method == 'POST':
+        try:
+            total_gb = int(request.POST.get('total_allocated_gb', sub.total_allocated_gb))
+            expires_at_raw = request.POST.get('expires_at', '')
+            is_active = request.POST.get('is_active') == '1'
+            new_owner_username = request.POST.get('owner_username', '').strip()
+
+            if total_gb < 0:
+                raise ValueError('Traffic must be non-negative.')
+
+            sub.total_allocated_gb = total_gb
+            sub.is_active = is_active
+
+            if expires_at_raw:
+                from django.utils.dateparse import parse_datetime
+                from datetime import datetime
+                parsed = parse_datetime(expires_at_raw)
+                if not parsed:
+                    # try date only
+                    try:
+                        parsed = datetime.strptime(expires_at_raw, '%Y-%m-%d')
+                        parsed = timezone.make_aware(parsed)
+                    except ValueError:
+                        parsed = None
+                if parsed:
+                    sub.expires_at = parsed
+
+            if new_owner_username:
+                new_owner = CustomUser.objects.filter(username=new_owner_username).first()
+                if new_owner:
+                    sub.user = new_owner
+                else:
+                    messages.error(request, f'User "{new_owner_username}" not found.')
+                    return redirect('frontend:master_subscriptions')
+
+            sub.save()
+            messages.success(request, f'Subscription updated.')
+        except ValueError as e:
+            messages.error(request, str(e))
     return redirect('frontend:master_subscriptions')

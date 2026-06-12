@@ -1,0 +1,163 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Clients — {{ server.name }}{% endblock %}
+{% block content %}
+<div class="space-y-6">
+  <div class="flex items-center gap-3">
+    <a href="{% url 'frontend:master_servers' %}" class="text-slate-400 hover:text-white"><i class="fa-solid fa-arrow-left"></i></a>
+    <div>
+      <h1 class="text-2xl font-bold text-white">{{ server.name }} — Clients</h1>
+      <p class="text-slate-400 text-sm">{{ server.get_host }}:{{ server.api_port }}</p>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="grid grid-cols-3 gap-4">
+    <div class="card text-center">
+      <p class="text-3xl font-bold text-white">{{ total_count }}</p>
+      <p class="text-slate-400 text-sm mt-1">Total Clients</p>
+    </div>
+    <div class="card text-center">
+      <p class="text-3xl font-bold text-green-400">{{ managed_count }}</p>
+      <p class="text-slate-400 text-sm mt-1">Tracked by vShop</p>
+    </div>
+    <div class="card text-center">
+      <p class="text-3xl font-bold text-yellow-400">{{ untracked_count }}</p>
+      <p class="text-slate-400 text-sm mt-1">Untracked</p>
+    </div>
+  </div>
+
+  {% if error %}
+  <div class="card border-red-700 bg-red-900/20">
+    <p class="text-red-400"><i class="fa-solid fa-triangle-exclamation mr-2"></i>{{ error }}</p>
+  </div>
+  {% endif %}
+
+  <!-- Search -->
+  <form method="get" class="flex gap-3">
+    <input type="text" name="q" value="{{ search }}"
+      placeholder="Search by email, name or UUID…"
+      class="flex-1 bg-slate-800 border border-slate-600 text-white rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-indigo-500">
+    <button type="submit" class="btn-primary text-sm py-2"><i class="fa-solid fa-search"></i> Search</button>
+    {% if search %}<a href="{% url 'frontend:master_server_clients' server.id %}" class="text-slate-400 hover:text-white py-2 px-3 text-sm">Clear</a>{% endif %}
+  </form>
+
+  <!-- Table -->
+  <div class="card overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-slate-400 border-b border-slate-700 text-xs uppercase">
+        <tr>
+          <th class="text-left py-3 px-3">Client</th>
+          <th class="text-left py-3 px-3">Inbounds</th>
+          <th class="text-left py-3 px-3">Traffic</th>
+          <th class="text-left py-3 px-3">Status</th>
+          <th class="text-left py-3 px-3">vShop Owner</th>
+          <th class="text-left py-3 px-3">Actions</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-700/50">
+        {% for c in clients %}
+        <tr class="hover:bg-slate-700/30 text-slate-300">
+          <td class="py-3 px-3">
+            <p class="font-medium text-white">{{ c.display_name }}</p>
+            <p class="text-xs text-slate-500 font-mono">{{ c.uuid|slice:":18" }}…</p>
+            {% if c.email and c.email != c.display_name %}
+            <p class="text-xs text-slate-400">{{ c.email }}</p>
+            {% endif %}
+          </td>
+          <td class="py-3 px-3">
+            <span class="text-xs">{{ c.inbounds }}</span>
+          </td>
+          <td class="py-3 px-3">
+            {% if c.total_gb %}
+            <span class="text-xs">{{ c.total_gb|filesizeformat }}</span>
+            {% else %}
+            <span class="text-xs text-slate-500">∞</span>
+            {% endif %}
+          </td>
+          <td class="py-3 px-3">
+            {% if c.enable %}
+            <span class="badge-approved">Active</span>
+            {% else %}
+            <span class="badge-rejected">Disabled</span>
+            {% endif %}
+          </td>
+          <td class="py-3 px-3">
+            {% if c.owner and c.owner.username != '__imported__' %}
+            <span class="text-indigo-400 font-medium">{{ c.owner.username }}</span>
+            {% elif c.subscription %}
+            <span class="text-yellow-500 text-xs">Imported</span>
+            {% else %}
+            <span class="text-slate-500 text-xs">Untracked</span>
+            {% endif %}
+          </td>
+          <td class="py-3 px-3">
+            {% if c.subscription %}
+            <button onclick="openManage('{{ c.subscription.id }}','{{ c.display_name|escapejs }}','{{ c.subscription.total_allocated_gb }}','{{ c.subscription.expires_at|date:"Y-m-d" }}','{{ c.owner.username if c.owner else "" }}','{{ c.subscription.is_active|yesno:"1,0" }}')"
+              class="text-xs text-indigo-400 hover:text-indigo-300 border border-indigo-700 rounded px-2 py-1">
+              <i class="fa-solid fa-pen-to-square"></i> Manage
+            </button>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="text-center py-12 text-slate-500">No clients found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Manage Modal -->
+<div id="manage-modal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-slate-800 border border-slate-700 rounded-xl w-full max-w-md shadow-2xl">
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+      <h2 class="text-white font-semibold">Manage: <span id="modal-name" class="text-indigo-400"></span></h2>
+      <button onclick="closeManage()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark text-lg"></i></button>
+    </div>
+    <form id="manage-form" method="post" action="" class="px-6 py-5 space-y-4">
+      {% csrf_token %}
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Owner Username</label>
+        <input type="text" name="owner_username" id="modal-owner"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
+          placeholder="Leave blank to keep current">
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Traffic Limit (GB) — 0 = unlimited</label>
+        <input type="number" name="total_allocated_gb" id="modal-gb" min="0"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+      </div>
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Expires At</label>
+        <input type="date" name="expires_at" id="modal-expiry"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+      </div>
+      <div class="flex items-center gap-2">
+        <input type="checkbox" name="is_active" id="modal-active" value="1" class="rounded">
+        <label for="modal-active" class="text-sm text-slate-300">Active</label>
+      </div>
+      <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn-primary flex-1 justify-center">Save Changes</button>
+        <button type="button" onclick="closeManage()" class="flex-1 text-center border border-slate-600 text-slate-300 hover:text-white rounded-lg py-2 text-sm">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% block extra_js %}
+<script>
+function openManage(subId, name, gb, expiry, owner, isActive) {
+  document.getElementById('modal-name').textContent = name;
+  document.getElementById('modal-gb').value = gb;
+  document.getElementById('modal-expiry').value = expiry;
+  document.getElementById('modal-owner').value = (owner === '__imported__') ? '' : owner;
+  document.getElementById('modal-active').checked = isActive === '1';
+  document.getElementById('manage-form').action = '/master/subscriptions/' + subId + '/edit/';
+  document.getElementById('manage-modal').classList.remove('hidden');
+}
+function closeManage() {
+  document.getElementById('manage-modal').classList.add('hidden');
+}
+</script>
+{% endblock %}
+{% endblock %}
