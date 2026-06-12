@@ -15,15 +15,23 @@ class XuiAPIException(Exception):
 
 class XuiAPIClient:
     """
-    3x-ui URL layout (example base_path=/secret/):
-      login POST -> https://host:port/secret/login
-      API        -> https://host:port/secret/panel/api/...
+    3x-ui v3.0+ API client.
+
+    Auth flow (CSRF-protected since v3.0.0):
+      1. GET  base_path/login          -> receive session cookie + x-csrf-token (or meta tag)
+      2. POST base_path/login          -> send credentials + cookie + X-Csrf-Token header
+      3. Use returned session cookie for all subsequent API calls.
+
+    URL layout (example base_path=/secret/):
+      login   -> https://host:port/secret/login
+      API     -> https://host:port/secret/panel/api/...
     """
+
     def __init__(self, server: XuiServer):
         self.server = server
         protocol = "https" if server.use_ssl else "http"
         host = server.get_host()
-        self.base_path = server.get_base_path()  # always /something/
+        self.base_path = server.get_base_path()  # e.g. /4bfAPdC269HYSj1c24/
         self.base_url = f"{protocol}://{host}:{server.api_port}"
         self.verify_ssl = False
         self.cache_key = f"xui_session_{server.id}"
@@ -31,8 +39,47 @@ class XuiAPIClient:
         self.backoff_factor = 2
 
     def _url(self, path: str) -> str:
-        """Build URL for any endpoint under base_path."""
         return f"{self.base_url}{self.base_path}{path.lstrip('/')}"
+
+    def _fetch_csrf_token(self, session: requests.Session) -> str:
+        """
+        Step 1: GET the login page to obtain the CSRF token.
+        3x-ui returns it in one of:
+          - Response header:  X-Csrf-Token
+          - Cookie:           csrf_token / XSRF-TOKEN
+          - HTML meta tag:    <meta name="x-csrf-token" content="...">
+        """
+        login_url = self._url('login')
+        resp = session.get(login_url, timeout=10.0, verify=self.verify_ssl)
+        resp.raise_for_status()
+
+        # 1. Check response header
+        token = resp.headers.get('X-Csrf-Token') or resp.headers.get('x-csrf-token')
+        if token:
+            return token
+
+        # 2. Check cookies
+        for name in ('csrf_token', 'XSRF-TOKEN', 'x-csrf-token'):
+            token = session.cookies.get(name)
+            if token:
+                return token
+
+        # 3. Parse HTML meta tag  <meta name="x-csrf-token" content="TOKEN">
+        import re
+        match = re.search(
+            r'<meta[^>]+name=["\']x-csrf-token["\'][^>]+content=["\']([^"\']+)["\']',
+            resp.text, re.IGNORECASE
+        ) or re.search(
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']x-csrf-token["\']',
+            resp.text, re.IGNORECASE
+        )
+        if match:
+            return match.group(1)
+
+        raise XuiAPIException(
+            "Could not find CSRF token in login page response. "
+            "Check that base_path is correct and the panel is reachable."
+        )
 
     def _get_session_cookie(self) -> Dict[str, str]:
         cached = cache.get(self.cache_key)
@@ -40,29 +87,48 @@ class XuiAPIClient:
             return cached
 
         login_url = self._url('login')
-        logger.info(f"Authenticating at {login_url}")
+        session = requests.Session()
+        session.verify = self.verify_ssl
+
         try:
-            response = requests.post(
+            # Step 1: GET login page → grab CSRF token
+            csrf_token = self._fetch_csrf_token(session)
+            logger.info(f"Got CSRF token for server '{self.server.name}'")
+
+            # Step 2: POST credentials with CSRF token
+            response = session.post(
                 login_url,
-                data={"username": self.server.admin_username, "password": self.server.admin_password},
+                data={
+                    "username": self.server.admin_username,
+                    "password": self.server.admin_password,
+                },
+                headers={
+                    "X-Csrf-Token": csrf_token,
+                    "Referer": login_url,
+                },
                 timeout=10.0,
-                verify=self.verify_ssl,
                 allow_redirects=True,
             )
+
             if response.status_code == 403:
                 raise XuiAPIException(
-                    f"Authentication failed (403 Forbidden) — wrong username or password "
-                    f"for server '{self.server.name}'. URL: {login_url}"
+                    f"Authentication failed (403) for '{self.server.name}' — "
+                    "wrong username/password or CSRF token rejected."
                 )
             response.raise_for_status()
+
             json_data = response.json()
             if not json_data.get("success", True):
-                raise XuiAPIException(f"Login rejected by panel: {json_data.get('msg', 'unknown')}")
-            cookie_dict = response.cookies.get_dict()
+                raise XuiAPIException(f"Login rejected: {json_data.get('msg', 'unknown')}")
+
+            cookie_dict = dict(session.cookies)
             if not cookie_dict:
-                raise XuiAPIException("Login OK but no session cookie returned.")
+                raise XuiAPIException("Login succeeded but no session cookie returned.")
+
             cache.set(self.cache_key, cookie_dict, timeout=3600)
+            logger.info(f"Authenticated successfully with server '{self.server.name}'")
             return cookie_dict
+
         except XuiAPIException:
             raise
         except RequestException as e:
