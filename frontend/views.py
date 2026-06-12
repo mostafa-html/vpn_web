@@ -40,7 +40,6 @@ def _parse_field(value):
 
 
 def _fmt_bytes(b):
-    """Format bytes -> human readable string."""
     if b is None:
         return '0 B'
     b = int(b)
@@ -52,7 +51,6 @@ def _fmt_bytes(b):
 
 
 def _expiry_display(expiry_ms):
-    """Convert 3x-ui expiryTime (ms epoch, 0=never) to (date_str, days_remaining)."""
     if not expiry_ms:
         return None, None
     try:
@@ -269,14 +267,6 @@ def subadmin_create_user(request):
 # ---------------------------------------------------------------------------
 
 def _build_live_client_map(server):
-    """
-    Returns dict: uuid -> {
-        email, enable, expiry_ms, total_bytes (limit),
-        up_bytes, down_bytes, used_bytes,
-        inbound_tags (list)
-    }
-    Uses clientStats for live traffic, settings.clients for metadata.
-    """
     result = {}
     try:
         api_result = XuiAPIClient(server).get_inbounds()
@@ -289,9 +279,7 @@ def _build_live_client_map(server):
         protocol = inbound.get('protocol', '').upper()
         label = f"{protocol}/{tag}"
 
-        # clientStats: [{id, email, enable, up, down, total, expiryTime, ...}]
         client_stats = inbound.get('clientStats') or []
-        # Build stats lookup by email
         stats_by_email = {}
         for cs in client_stats:
             stats_by_email[cs.get('email', '')] = cs
@@ -307,8 +295,8 @@ def _build_live_client_map(server):
             up = int(stats.get('up', 0))
             down = int(stats.get('down', 0))
             used = up + down
-            total_bytes = int(cli.get('totalGB', 0))  # 0 = unlimited
-            expiry_ms = int(cli.get('expiryTime', 0))  # 0 = never
+            total_bytes = int(cli.get('totalGB', 0))
+            expiry_ms = int(cli.get('expiryTime', 0))
 
             if uuid not in result:
                 result[uuid] = {
@@ -322,15 +310,12 @@ def _build_live_client_map(server):
                     'inbound_tags': [label],
                 }
             else:
-                # same client on multiple inbounds — accumulate traffic
                 result[uuid]['up_bytes'] += up
                 result[uuid]['down_bytes'] += down
                 result[uuid]['used_bytes'] += used
                 result[uuid]['inbound_tags'].append(label)
-                # keep earliest non-zero expiry
                 if expiry_ms and (not result[uuid]['expiry_ms'] or expiry_ms < result[uuid]['expiry_ms']):
                     result[uuid]['expiry_ms'] = expiry_ms
-                # keep largest limit
                 if total_bytes > result[uuid]['total_bytes']:
                     result[uuid]['total_bytes'] = total_bytes
 
@@ -411,12 +396,14 @@ def _sync_server_inbounds_and_clients(server):
 
 @require_role('MASTER_ADMIN')
 def master_dashboard(request):
+    servers = XuiServer.objects.prefetch_related('inbounds').order_by('name')
     return render(request, 'frontend/master_dashboard.html', {
         'total_users': CustomUser.objects.exclude(username='__imported__').count(),
         'active_subs': ProxySubscription.objects.filter(is_active=True).count(),
         'pending_txns': Transaction.objects.filter(status=Transaction.StatusChoices.PENDING).count(),
-        'total_servers': XuiServer.objects.count(),
-        'active_servers': XuiServer.objects.filter(is_active=True).count(),
+        'total_servers': servers.count(),
+        'active_servers': servers.filter(is_active=True).count(),
+        'servers': servers,
     })
 
 
@@ -469,7 +456,6 @@ def master_server_clients(request, server_id):
     search = request.GET.get('q', '').strip().lower()
     error = None
 
-    # DB: uuid -> {subscription, owner}
     db_map = {}
     for m in SubscriptionConfigMapping.objects.select_related('subscription', 'subscription__user', 'inbound').filter(inbound__server=server):
         uuid = m.subscription.xui_client_uuid
@@ -608,20 +594,7 @@ def master_pricing(request):
 
 
 @require_role('MASTER_ADMIN')
-def master_pricing_delete(request, tier_id):
-    tier = get_object_or_404(PricingTier, id=tier_id)
-    if request.method == 'POST':
-        tier.delete()
-        messages.success(request, 'Pricing tier deleted.')
-    return redirect('frontend:master_pricing')
-
-
-@require_role('MASTER_ADMIN')
 def master_subscriptions(request):
-    """
-    Shows all clients across ALL servers with live 3x-ui data.
-    Like 3x-ui: name, traffic bar, remaining, expiry, inbounds.
-    """
     search = request.GET.get('q', '').strip().lower()
     status_filter = request.GET.get('status', '')
     server_filter = request.GET.get('server', '')
@@ -629,7 +602,6 @@ def master_subscriptions(request):
     servers = XuiServer.objects.filter(is_active=True)
     clients = []
 
-    # DB lookup: uuid -> {subscription, owner}
     db_map = {}
     for m in SubscriptionConfigMapping.objects.select_related(
         'subscription', 'subscription__user', 'inbound', 'inbound__server'
@@ -664,7 +636,6 @@ def master_subscriptions(request):
 
             is_active = d['enable']
 
-            # Apply filters
             if status_filter == 'active' and not is_active:
                 continue
             if status_filter == 'expired' and is_active:
