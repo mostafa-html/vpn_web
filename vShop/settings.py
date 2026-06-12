@@ -1,16 +1,16 @@
 from pathlib import Path
-from decouple import config
+from decouple import config, Csv
 from celery.schedules import crontab
 
-# ─── Paths ────────────────────────────────────────────────────────────────────
+# ─── Paths ───────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# ─── Core ─────────────────────────────────────────────────────────────────────
+# ─── Core ────────────────────────────────────────────────────────────────────
 SECRET_KEY = config("SECRET_KEY", default="django-insecure-g2=%j((j))&yrac9_$asxx&kf(-+tvxl)4hm7uqhv((gc(b%uy")
 DEBUG = config("DEBUG", default=True, cast=bool)
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="localhost,127.0.0.1").split(",")
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="localhost,127.0.0.1", cast=Csv())
 
-# ─── Applications ─────────────────────────────────────────────────────────────
+# ─── Applications ───────────────────────────────────────────────────────────
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -53,7 +53,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "vShop.wsgi.application"
 
-# ─── Database ─────────────────────────────────────────────────────────────────
+# ─── Database ────────────────────────────────────────────────────────────────
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
@@ -61,7 +61,7 @@ DATABASES = {
     }
 }
 
-# ─── Auth ─────────────────────────────────────────────────────────────────────
+# ─── Auth ───────────────────────────────────────────────────────────────────
 AUTH_USER_MODEL = "billing_engine.CustomUser"
 LOGIN_URL = "frontend:login"
 LOGIN_REDIRECT_URL = "frontend:index"
@@ -74,23 +74,24 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# ─── Internationalisation ──────────────────────────────────────────────────────
+# ─── Internationalisation ─────────────────────────────────────────────────────
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-# ─── Static & Media ───────────────────────────────────────────────────────────
+# ─── Static & Media ─────────────────────────────────────────────────────────
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_DIRS = [BASE_DIR / "static"]
+# No STATICFILES_DIRS needed: Django's APP_DIRS=True (via staticfiles app)
+# automatically finds frontend/static/frontend/ inside the installed app.
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "protected_media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# ─── Redis / Cache ────────────────────────────────────────────────────────────
+# ─── Redis / Cache ──────────────────────────────────────────────────────────
 REDIS_URL = config("REDIS_URL", default="redis://redis:6379/0")
 
 CACHES = {
@@ -110,7 +111,7 @@ CACHES = {
 SESSION_ENGINE = "django.contrib.sessions.backends.cache"
 SESSION_CACHE_ALIAS = "default"
 
-# ─── Celery ───────────────────────────────────────────────────────────────────
+# ─── Celery ────────────────────────────────────────────────────────────────
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = config("REDIS_URL", default="redis://redis:6379/1")
 CELERY_ACCEPT_CONTENT = ["json"]
@@ -120,7 +121,7 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_SOFT_TIME_LIMIT = 300
 CELERY_TASK_TIME_LIMIT = 360
 
-# ─── Celery Beat ──────────────────────────────────────────────────────────────
+# ─── Celery Beat ───────────────────────────────────────────────────────────
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_BEAT_SCHEDULE = {
     "sync-edge-traffic-every-10min": {
@@ -130,5 +131,5 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-# ─── Protected Media ──────────────────────────────────────────────────────────
+# ─── Protected Media ────────────────────────────────────────────────────────
 PROTECTED_MEDIA_ROOT = BASE_DIR / "protected_media"
