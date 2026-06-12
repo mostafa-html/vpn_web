@@ -25,6 +25,18 @@ from .decorators import require_role
 logger = logging.getLogger(__name__)
 
 
+def _parse_field(value):
+    """Return value as dict regardless of whether it came as a dict or JSON string."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
 def _role_redirect(user):
     if user.role == CustomUser.Role.MASTER_ADMIN:
         return 'frontend:master_dashboard'
@@ -134,7 +146,7 @@ def custom_plan(request):
                 custom_gb=form.cleaned_data['custom_gb'],
                 custom_days=form.cleaned_data['custom_days'],
             )
-            messages.success(request, f'Custom plan purchased!')
+            messages.success(request, 'Custom plan purchased!')
             return redirect('frontend:subscriptions')
         except InsufficientFundsError:
             messages.error(request, 'Insufficient wallet balance.')
@@ -230,27 +242,16 @@ def subadmin_create_user(request):
 # ---------------------------------------------------------------------------
 
 def _sync_server_inbounds_and_clients(server):
-    """
-    Called automatically after a server is added.
-    1. Pulls all inbounds from 3x-ui and saves them to XuiInbound.
-    2. Pulls all clients inside every inbound and creates/updates
-       a ProxySubscription + SubscriptionConfigMapping for each,
-       assigning them to a special 'imported' system user if they
-       are not already tracked by a vShop subscription.
-    Returns (inbound_count, client_count, errors).
-    """
     inbound_count = 0
     client_count = 0
     errors = []
 
     try:
-        client = XuiAPIClient(server)
-        result = client.get_inbounds()
+        result = XuiAPIClient(server).get_inbounds()
     except XuiAPIException as e:
         errors.append(str(e))
         return inbound_count, client_count, errors
 
-    # Get or create a system user to own unassigned imported clients
     import_user, _ = CustomUser.objects.get_or_create(
         username='__imported__',
         defaults={
@@ -260,16 +261,10 @@ def _sync_server_inbounds_and_clients(server):
         }
     )
 
-    managed_uuids = set(
-        ProxySubscription.objects.values_list('xui_client_uuid', flat=True)
-    )
+    managed_uuids = set(ProxySubscription.objects.values_list('xui_client_uuid', flat=True))
 
     for ib in result.get('obj', []):
-        try:
-            stream_raw = ib.get('streamSettings', '{}')
-            stream = json.loads(stream_raw) if isinstance(stream_raw, str) else stream_raw
-        except (json.JSONDecodeError, TypeError):
-            stream = {}
+        stream = _parse_field(ib.get('streamSettings', {}))
 
         inbound_obj, _ = XuiInbound.objects.get_or_create(
             server=server,
@@ -282,11 +277,8 @@ def _sync_server_inbounds_and_clients(server):
         )
         inbound_count += 1
 
-        # Parse clients inside this inbound
-        try:
-            settings_obj = json.loads(ib.get('settings', '{}'))
-        except (json.JSONDecodeError, TypeError):
-            settings_obj = {}
+        # settings is a dict in v3.3.1, may be a JSON string in older versions
+        settings_obj = _parse_field(ib.get('settings', {}))
 
         for cli in settings_obj.get('clients', []):
             uuid = cli.get('id', '')
@@ -302,15 +294,16 @@ def _sync_server_inbounds_and_clients(server):
                     expires_at=timezone.now(),
                     is_active=cli.get('enable', True),
                 )
-                SubscriptionConfigMapping.objects.create(
+                SubscriptionConfigMapping.objects.get_or_create(
                     subscription=sub,
                     inbound=inbound_obj,
-                    xui_client_email=email,
+                    defaults={'xui_client_email': email},
                 )
                 managed_uuids.add(uuid)
                 client_count += 1
             except Exception as e:
                 errors.append(f'Client {uuid[:8]}: {e}')
+                logger.error('Import client error: %s', e)
 
     return inbound_count, client_count, errors
 
@@ -355,10 +348,8 @@ def master_users(request):
 @require_role('MASTER_ADMIN')
 def master_servers(request):
     form = XuiServerForm(request.POST or None)
-    sync_result = None
     if request.method == 'POST' and form.is_valid():
         server = form.save()
-        # Auto-sync inbounds and import existing clients
         inbound_count, client_count, errors = _sync_server_inbounds_and_clients(server)
         if errors:
             messages.warning(request, f'Server added but sync had errors: {"; ".join(errors[:3])}')
@@ -400,10 +391,8 @@ def master_server_clients(request, server_id):
     try:
         result = XuiAPIClient(server).get_inbounds()
         for inbound in result.get('obj', []):
-            try:
-                settings_obj = json.loads(inbound.get('settings', '{}'))
-            except (json.JSONDecodeError, TypeError):
-                settings_obj = {}
+            # Fix: use _parse_field so both dict and JSON string are handled
+            settings_obj = _parse_field(inbound.get('settings', {}))
             for cli in settings_obj.get('clients', []):
                 uuid = cli.get('id', '')
                 clients.append({
@@ -414,6 +403,7 @@ def master_server_clients(request, server_id):
                     'email': cli.get('email', ''),
                     'enable': cli.get('enable', True),
                     'total_gb': round((inbound.get('up', 0) + inbound.get('down', 0)) / (1024 ** 3), 2),
+                    'expiry': cli.get('expiryTime', 0),
                     'subscription': managed_uuids.get(uuid),
                 })
     except XuiAPIException as e:
@@ -536,5 +526,5 @@ def master_deprovision(request, sub_id):
     if request.method == 'POST':
         sub.is_active = False
         sub.save(update_fields=['is_active', 'updated_at'])
-        messages.warning(request, f'Subscription deprovisioned.')
+        messages.warning(request, 'Subscription deprovisioned.')
     return redirect('frontend:master_subscriptions')
