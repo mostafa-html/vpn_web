@@ -1,3 +1,4 @@
+import json
 import logging
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
@@ -6,7 +7,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.db import transaction as db_transaction
 from django.utils import timezone
-from django.db.models import Count, Q
+from django.db.models import Q
 
 from billing_engine.models import (
     CustomUser, VPNPlan, Transaction, ProxySubscription,
@@ -23,9 +24,6 @@ from .decorators import require_role
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _role_redirect(user):
     if user.role == CustomUser.Role.MASTER_ADMIN:
@@ -116,12 +114,12 @@ def buy_plan(request, plan_id):
             result = process_purchase(buyer=request.user, plan=plan)
             messages.success(request, f'Plan purchased! Reference: {result["payment_ref_code"]}')
         except InsufficientFundsError:
-            messages.error(request, 'Insufficient wallet balance. Please top up your wallet first.')
+            messages.error(request, 'Insufficient wallet balance.')
         except ValueError as e:
             messages.error(request, str(e))
         except Exception as e:
             logger.error('Plan purchase error: %s', e)
-            messages.error(request, 'An unexpected error occurred. Please try again.')
+            messages.error(request, 'An unexpected error occurred.')
         return redirect('frontend:subscriptions')
     return render(request, 'frontend/buy_confirm.html', {'plan': plan})
 
@@ -136,7 +134,7 @@ def custom_plan(request):
                 custom_gb=form.cleaned_data['custom_gb'],
                 custom_days=form.cleaned_data['custom_days'],
             )
-            messages.success(request, f'Custom plan purchased! Reference: {result["payment_ref_code"]}')
+            messages.success(request, f'Custom plan purchased!')
             return redirect('frontend:subscriptions')
         except InsufficientFundsError:
             messages.error(request, 'Insufficient wallet balance.')
@@ -150,10 +148,7 @@ def subscriptions(request):
     user = request.user
     active = ProxySubscription.objects.filter(user=user, is_active=True).order_by('-created_at')
     expired = ProxySubscription.objects.filter(user=user, is_active=False).order_by('-created_at')
-    return render(request, 'frontend/subscriptions.html', {
-        'active_subs': active,
-        'expired_subs': expired,
-    })
+    return render(request, 'frontend/subscriptions.html', {'active_subs': active, 'expired_subs': expired})
 
 
 @login_required
@@ -165,9 +160,7 @@ def subscription_detail(request, sub_id):
     now = timezone.now()
     remaining_days = max((sub.expires_at - now).days, 0) if sub.expires_at > now else 0
     return render(request, 'frontend/subscription_detail.html', {
-        'sub': sub,
-        'usage_pct': usage_pct,
-        'remaining_days': remaining_days,
+        'sub': sub, 'usage_pct': usage_pct, 'remaining_days': remaining_days,
     })
 
 
@@ -181,12 +174,9 @@ def wallet(request):
         topup.status = Transaction.StatusChoices.PENDING
         topup.payment_ref_code = topup.payment_ref_code.upper()
         topup.save()
-        messages.success(request, 'Top-up request submitted! Awaiting admin approval.')
+        messages.success(request, 'Top-up request submitted!')
         return redirect('frontend:wallet')
-    txns = Transaction.objects.filter(
-        user=request.user,
-        type=Transaction.TypeChoices.WALLET_TOPUP
-    ).order_by('-created_at')[:10]
+    txns = Transaction.objects.filter(user=request.user, type=Transaction.TypeChoices.WALLET_TOPUP).order_by('-created_at')[:10]
     return render(request, 'frontend/wallet.html', {'form': form, 'txns': txns})
 
 
@@ -204,13 +194,10 @@ def transactions(request):
 def subadmin_dashboard(request):
     if request.user.role == CustomUser.Role.MASTER_ADMIN:
         return redirect('frontend:master_dashboard')
-    user = request.user
-    managed_users = CustomUser.objects.filter(parent_manager=user)
-    managed_count = managed_users.count()
-    active_subs = ProxySubscription.objects.filter(user__in=managed_users, is_active=True).count()
+    managed_users = CustomUser.objects.filter(parent_manager=request.user)
     return render(request, 'frontend/subadmin_dashboard.html', {
-        'managed_count': managed_count,
-        'active_subs': active_subs,
+        'managed_count': managed_users.count(),
+        'active_subs': ProxySubscription.objects.filter(user__in=managed_users, is_active=True).count(),
     })
 
 
@@ -233,9 +220,99 @@ def subadmin_create_user(request):
             role=CustomUser.Role.END_USER,
             parent_manager=request.user,
         )
-        messages.success(request, f'User {new_user.username} created successfully.')
+        messages.success(request, f'User {new_user.username} created.')
         return redirect('frontend:subadmin_users')
     return render(request, 'frontend/subadmin_create_user.html', {'form': form})
+
+
+# ---------------------------------------------------------------------------
+# MASTER ADMIN — helpers
+# ---------------------------------------------------------------------------
+
+def _sync_server_inbounds_and_clients(server):
+    """
+    Called automatically after a server is added.
+    1. Pulls all inbounds from 3x-ui and saves them to XuiInbound.
+    2. Pulls all clients inside every inbound and creates/updates
+       a ProxySubscription + SubscriptionConfigMapping for each,
+       assigning them to a special 'imported' system user if they
+       are not already tracked by a vShop subscription.
+    Returns (inbound_count, client_count, errors).
+    """
+    inbound_count = 0
+    client_count = 0
+    errors = []
+
+    try:
+        client = XuiAPIClient(server)
+        result = client.get_inbounds()
+    except XuiAPIException as e:
+        errors.append(str(e))
+        return inbound_count, client_count, errors
+
+    # Get or create a system user to own unassigned imported clients
+    import_user, _ = CustomUser.objects.get_or_create(
+        username='__imported__',
+        defaults={
+            'role': CustomUser.Role.END_USER,
+            'is_active': False,
+            'email': 'imported@system.local',
+        }
+    )
+
+    managed_uuids = set(
+        ProxySubscription.objects.values_list('xui_client_uuid', flat=True)
+    )
+
+    for ib in result.get('obj', []):
+        try:
+            stream_raw = ib.get('streamSettings', '{}')
+            stream = json.loads(stream_raw) if isinstance(stream_raw, str) else stream_raw
+        except (json.JSONDecodeError, TypeError):
+            stream = {}
+
+        inbound_obj, _ = XuiInbound.objects.get_or_create(
+            server=server,
+            xui_inbound_id=ib['id'],
+            defaults={
+                'protocol': ib.get('protocol', 'VLESS').upper(),
+                'stream_settings': stream,
+                'is_available_for_purchase': True,
+            }
+        )
+        inbound_count += 1
+
+        # Parse clients inside this inbound
+        try:
+            settings_obj = json.loads(ib.get('settings', '{}'))
+        except (json.JSONDecodeError, TypeError):
+            settings_obj = {}
+
+        for cli in settings_obj.get('clients', []):
+            uuid = cli.get('id', '')
+            email = cli.get('email', '')
+            if not uuid or uuid in managed_uuids:
+                continue
+            try:
+                sub = ProxySubscription.objects.create(
+                    user=import_user,
+                    xui_client_uuid=uuid,
+                    subscription_url='',
+                    total_allocated_gb=0,
+                    expires_at=timezone.now(),
+                    is_active=cli.get('enable', True),
+                )
+                SubscriptionConfigMapping.objects.create(
+                    subscription=sub,
+                    inbound=inbound_obj,
+                    xui_client_email=email,
+                )
+                managed_uuids.add(uuid)
+                client_count += 1
+            except Exception as e:
+                errors.append(f'Client {uuid[:8]}: {e}')
+
+    return inbound_count, client_count, errors
 
 
 # ---------------------------------------------------------------------------
@@ -244,39 +321,53 @@ def subadmin_create_user(request):
 
 @require_role('MASTER_ADMIN')
 def master_dashboard(request):
-    total_users = CustomUser.objects.count()
-    active_subs = ProxySubscription.objects.filter(is_active=True).count()
-    pending_txns = Transaction.objects.filter(status=Transaction.StatusChoices.PENDING).count()
-    total_servers = XuiServer.objects.count()
-    active_servers = XuiServer.objects.filter(is_active=True).count()
     return render(request, 'frontend/master_dashboard.html', {
-        'total_users': total_users,
-        'active_subs': active_subs,
-        'pending_txns': pending_txns,
-        'total_servers': total_servers,
-        'active_servers': active_servers,
+        'total_users': CustomUser.objects.exclude(username='__imported__').count(),
+        'active_subs': ProxySubscription.objects.filter(is_active=True).count(),
+        'pending_txns': Transaction.objects.filter(status=Transaction.StatusChoices.PENDING).count(),
+        'total_servers': XuiServer.objects.count(),
+        'active_servers': XuiServer.objects.filter(is_active=True).count(),
     })
 
 
 @require_role('MASTER_ADMIN')
 def master_users(request):
     role_filter = request.GET.get('role', '')
-    users = CustomUser.objects.all().order_by('username')
+    search = request.GET.get('q', '').strip()
+    users = CustomUser.objects.exclude(username='__imported__').order_by('username')
     if role_filter:
         users = users.filter(role=role_filter)
+    if search:
+        users = users.filter(
+            Q(username__icontains=search) |
+            Q(email__icontains=search) |
+            Q(first_name__icontains=search) |
+            Q(last_name__icontains=search)
+        )
     return render(request, 'frontend/master_users.html', {
         'users': users,
         'role_filter': role_filter,
         'role_choices': CustomUser.Role.choices,
+        'search': search,
     })
 
 
 @require_role('MASTER_ADMIN')
 def master_servers(request):
     form = XuiServerForm(request.POST or None)
+    sync_result = None
     if request.method == 'POST' and form.is_valid():
-        form.save()
-        messages.success(request, 'Server added successfully.')
+        server = form.save()
+        # Auto-sync inbounds and import existing clients
+        inbound_count, client_count, errors = _sync_server_inbounds_and_clients(server)
+        if errors:
+            messages.warning(request, f'Server added but sync had errors: {"; ".join(errors[:3])}')
+        else:
+            messages.success(
+                request,
+                f'Server "{server.name}" added. '
+                f'Synced {inbound_count} inbound(s), imported {client_count} existing client(s).'
+            )
         return redirect('frontend:master_servers')
     servers = XuiServer.objects.prefetch_related('inbounds').order_by('name')
     return render(request, 'frontend/master_servers.html', {'form': form, 'servers': servers})
@@ -295,16 +386,10 @@ def master_server_toggle(request, server_id):
 
 @require_role('MASTER_ADMIN')
 def master_server_clients(request, server_id):
-    """
-    Show all clients currently on the 3x-ui server (live from API),
-    cross-referenced with local DB subscriptions so you can see
-    which are managed by vShop and which are untracked.
-    """
     server = get_object_or_404(XuiServer, id=server_id)
     clients = []
     error = None
 
-    # Build a lookup: xui_client_uuid -> ProxySubscription
     managed_uuids = {
         m.subscription.xui_client_uuid: m.subscription
         for m in SubscriptionConfigMapping.objects.select_related(
@@ -315,23 +400,21 @@ def master_server_clients(request, server_id):
     try:
         result = XuiAPIClient(server).get_inbounds()
         for inbound in result.get('obj', []):
-            import json
             try:
                 settings_obj = json.loads(inbound.get('settings', '{}'))
             except (json.JSONDecodeError, TypeError):
                 settings_obj = {}
-            for client in settings_obj.get('clients', []):
-                uuid = client.get('id', '')
-                total_bytes = inbound.get('up', 0) + inbound.get('down', 0)
+            for cli in settings_obj.get('clients', []):
+                uuid = cli.get('id', '')
                 clients.append({
                     'inbound_id': inbound.get('id'),
                     'inbound_tag': inbound.get('tag', '?'),
                     'protocol': inbound.get('protocol', '?').upper(),
                     'uuid': uuid,
-                    'email': client.get('email', ''),
-                    'enable': client.get('enable', True),
-                    'total_gb': round(total_bytes / (1024 ** 3), 2),
-                    'subscription': managed_uuids.get(uuid),  # None = untracked
+                    'email': cli.get('email', ''),
+                    'enable': cli.get('enable', True),
+                    'total_gb': round((inbound.get('up', 0) + inbound.get('down', 0)) / (1024 ** 3), 2),
+                    'subscription': managed_uuids.get(uuid),
                 })
     except XuiAPIException as e:
         error = str(e)
@@ -352,7 +435,7 @@ def master_inbound_toggle(request, inbound_id):
         inbound.is_available_for_purchase = not inbound.is_available_for_purchase
         inbound.save(update_fields=['is_available_for_purchase'])
         state = 'enabled' if inbound.is_available_for_purchase else 'disabled'
-        messages.success(request, f'Inbound {inbound} {state} for purchase.')
+        messages.success(request, f'Inbound {inbound} {state}.')
     return redirect('frontend:master_servers')
 
 
@@ -363,8 +446,10 @@ def master_plans(request):
         form.save()
         messages.success(request, 'Plan created.')
         return redirect('frontend:master_plans')
-    plans_qs = VPNPlan.objects.all().order_by('-created_at')
-    return render(request, 'frontend/master_plans.html', {'form': form, 'plans': plans_qs})
+    return render(request, 'frontend/master_plans.html', {
+        'form': form,
+        'plans': VPNPlan.objects.all().order_by('-created_at'),
+    })
 
 
 @require_role('MASTER_ADMIN')
@@ -373,7 +458,7 @@ def master_plan_delete(request, plan_id):
     if request.method == 'POST':
         plan.is_visible = False
         plan.save(update_fields=['is_visible'])
-        messages.success(request, f'Plan "{plan.name}" hidden (soft-deleted).')
+        messages.success(request, f'Plan "{plan.name}" hidden.')
     return redirect('frontend:master_plans')
 
 
@@ -396,18 +481,16 @@ def master_transaction_review(request, tx_id):
     form = TransactionReviewForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
         new_status = form.cleaned_data['status']
-        rejection_reason = form.cleaned_data.get('rejection_reason', '')
         with db_transaction.atomic():
             if new_status == 'APPROVED' and tx.type == Transaction.TypeChoices.WALLET_TOPUP:
                 locked_user = CustomUser.objects.select_for_update().get(pk=tx.user.pk)
                 locked_user.wallet_balance += tx.amount
                 locked_user.save(update_fields=['wallet_balance'])
             tx.status = new_status
-            tx.rejection_reason = rejection_reason if new_status == 'REJECTED' else ''
+            tx.rejection_reason = form.cleaned_data.get('rejection_reason', '') if new_status == 'REJECTED' else ''
             tx.reviewed_by = request.user
             tx.save()
-        label = 'approved' if new_status == 'APPROVED' else 'rejected'
-        messages.success(request, f'Transaction {tx.payment_ref_code} {label}.')
+        messages.success(request, f'Transaction {tx.payment_ref_code} {new_status.lower()}d.')
         return redirect('frontend:master_transactions')
     return render(request, 'frontend/master_transaction_review.html', {'tx': tx, 'form': form})
 
@@ -419,8 +502,10 @@ def master_pricing(request):
         form.save()
         messages.success(request, 'Pricing tier created.')
         return redirect('frontend:master_pricing')
-    tiers = PricingTier.objects.select_related('specific_user').all()
-    return render(request, 'frontend/master_pricing.html', {'form': form, 'tiers': tiers})
+    return render(request, 'frontend/master_pricing.html', {
+        'form': form,
+        'tiers': PricingTier.objects.select_related('specific_user').all(),
+    })
 
 
 @require_role('MASTER_ADMIN')
@@ -441,8 +526,7 @@ def master_subscriptions(request):
     elif status_filter == 'expired':
         subs = subs.filter(is_active=False)
     return render(request, 'frontend/master_subscriptions.html', {
-        'subs': subs,
-        'status_filter': status_filter,
+        'subs': subs, 'status_filter': status_filter,
     })
 
 
@@ -452,5 +536,5 @@ def master_deprovision(request, sub_id):
     if request.method == 'POST':
         sub.is_active = False
         sub.save(update_fields=['is_active', 'updated_at'])
-        messages.warning(request, f'Subscription {str(sub.id)[:8]} manually deprovisioned.')
+        messages.warning(request, f'Subscription deprovisioned.')
     return redirect('frontend:master_subscriptions')

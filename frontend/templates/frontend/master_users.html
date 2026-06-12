@@ -2,52 +2,67 @@
 {% block title %}Users — vShop Admin{% endblock %}
 {% block content %}
 <div class="space-y-6">
-  <div class="flex items-center justify-between flex-wrap gap-3">
-    <h1 class="text-2xl font-bold text-white">Users</h1>
-    <form method="get" class="flex items-center gap-2">
-      <select name="role" onchange="this.form.submit()" class="bg-slate-800 border border-slate-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500">
-        <option value="">All Roles</option>
-        {% for value, label in role_choices %}
-        <option value="{{ value }}" {% if role_filter == value %}selected{% endif %}>{{ label }}</option>
+  <h1 class="text-2xl font-bold text-white">Users</h1>
+
+  <!-- Search & Filter -->
+  <form method="get" class="flex flex-wrap gap-3 items-end">
+    <div class="flex-1 min-w-[200px]">
+      <label class="block text-xs text-slate-400 mb-1">Search</label>
+      <input type="text" name="q" value="{{ search }}"
+        placeholder="Username, email, name…"
+        class="w-full bg-slate-800 border border-slate-600 text-white rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-indigo-500">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">Role</label>
+      <select name="role" class="bg-slate-800 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+        <option value="">All roles</option>
+        {% for val, label in role_choices %}
+        <option value="{{ val }}" {% if role_filter == val %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
       </select>
-    </form>
-  </div>
-  <div class="card">
-    <div class="overflow-x-auto">
-      <table class="w-full text-sm">
-        <thead><tr class="text-slate-400 text-xs uppercase border-b border-slate-700">
-          <th class="text-left pb-3">User</th>
-          <th class="text-left pb-3">Role</th>
-          <th class="text-left pb-3">Manager</th>
-          <th class="text-right pb-3">Wallet</th>
-          <th class="text-right pb-3">Joined</th>
-        </tr></thead>
-        <tbody>
-          {% for u in users %}
-          <tr class="table-row">
-            <td class="py-3">
-              <div class="flex items-center gap-2">
-                <div class="w-7 h-7 rounded-full bg-indigo-600/30 flex items-center justify-center text-xs font-bold text-indigo-300">{{ u.username|first|upper }}</div>
-                <div><p class="font-medium text-white">{{ u.username }}</p><p class="text-xs text-slate-400">{{ u.email|default:'' }}</p></div>
-              </div>
-            </td>
-            <td class="py-3">
-              {% if u.role == 'MASTER_ADMIN' %}<span class="badge-rejected">Master Admin</span>
-              {% elif u.role == 'SUB_ADMIN' %}<span class="badge-active">Sub Admin</span>
-              {% else %}<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-600/30 text-slate-300">End User</span>{% endif %}
-            </td>
-            <td class="py-3 text-slate-400">{{ u.parent_manager.username|default:'—' }}</td>
-            <td class="py-3 text-right font-semibold text-white">${{ u.wallet_balance|floatformat:2 }}</td>
-            <td class="py-3 text-right text-slate-400">{{ u.date_joined|date:'M d, Y' }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
     </div>
-    {% if not users %}
-    <div class="text-center py-10"><p class="text-slate-400">No users found.</p></div>
+    <button type="submit" class="btn-primary text-sm py-2"><i class="fa-solid fa-search"></i> Search</button>
+    {% if search or role_filter %}
+    <a href="{% url 'frontend:master_users' %}" class="text-slate-400 hover:text-white text-sm py-2 px-3">Clear</a>
     {% endif %}
+  </form>
+
+  <!-- Results count -->
+  <p class="text-slate-400 text-sm">{{ users|length }} user(s) found</p>
+
+  <!-- User Table -->
+  <div class="card overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-slate-400 border-b border-slate-700">
+        <tr>
+          <th class="text-left py-3 px-4">Username</th>
+          <th class="text-left py-3 px-4">Email</th>
+          <th class="text-left py-3 px-4">Role</th>
+          <th class="text-left py-3 px-4">Wallet</th>
+          <th class="text-left py-3 px-4">Joined</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-700">
+        {% for user in users %}
+        <tr class="hover:bg-slate-700/30 text-slate-300">
+          <td class="py-3 px-4 font-medium text-white">{{ user.username }}</td>
+          <td class="py-3 px-4">{{ user.email|default:"—" }}</td>
+          <td class="py-3 px-4">
+            <span class="px-2 py-0.5 rounded text-xs
+              {% if user.role == 'MASTER_ADMIN' %}bg-purple-900 text-purple-300
+              {% elif user.role == 'SUB_ADMIN' %}bg-blue-900 text-blue-300
+              {% else %}bg-slate-700 text-slate-300{% endif %}">
+              {{ user.get_role_display }}
+            </span>
+          </td>
+          <td class="py-3 px-4">${{ user.wallet_balance }}</td>
+          <td class="py-3 px-4 text-slate-400">{{ user.date_joined|date:"Y-m-d" }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="text-center py-10 text-slate-500">No users found.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 </div>
 {% endblock %}
