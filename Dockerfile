@@ -55,19 +55,13 @@ COPY --chown=appuser:appuser . .
 RUN mkdir -p /app/staticfiles /app/protected_media /app/static && \
     chown -R appuser:appuser /app/staticfiles /app/protected_media /app/static
 
-# Collect static files at build time
-# Uses a throw-away SECRET_KEY so collectstatic doesn't fail.
-# Real secrets are injected via .env at runtime.
-RUN SECRET_KEY=build-time-placeholder \
-    DEBUG=False \
-    ALLOWED_HOSTS=localhost \
-    REDIS_URL=redis://localhost:6379/0 \
-    python manage.py collectstatic --noinput --clear
+# NOTE: collectstatic is intentionally NOT run here.
+# It requires the full Django app registry (including Celery + Redis)
+# which is unavailable at image build time.
+# It is instead run in docker-entrypoint.sh on every container start.
 
 USER appuser
 
-# Entrypoint: run migrations then start gunicorn
-# Migrations are idempotent so this is safe on every restart.
 COPY --chown=appuser:appuser docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 

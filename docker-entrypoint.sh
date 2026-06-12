@@ -5,6 +5,9 @@ set -e
 echo "[entrypoint] Running database migrations..."
 python manage.py migrate --noinput
 
+echo "[entrypoint] Collecting static files..."
+python manage.py collectstatic --noinput --clear
+
 echo "[entrypoint] Starting Gunicorn..."
 exec gunicorn vShop.wsgi:application \
   --bind 0.0.0.0:8000 \

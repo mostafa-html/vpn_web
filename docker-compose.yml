@@ -1,5 +1,4 @@
 # docker-compose.yml  — vShop Multi-Tenant Proxy Billing Stack
-version: "3.9"
 
 volumes:
   protected_media:    # private upload store (transaction screenshots)
@@ -53,11 +52,7 @@ services:
   celery_worker:
     build: .
     restart: unless-stopped
-    command: >
-      celery -A vShop worker
-        --loglevel=info
-        -Ofair
-        --concurrency=4
+    command: celery -A vShop worker --loglevel=info -Ofair --concurrency=4
     env_file: .env
     volumes:
       - protected_media:/app/protected_media
@@ -73,10 +68,7 @@ services:
   celery_beat:
     build: .
     restart: unless-stopped
-    command: >
-      celery -A vShop beat
-        --loglevel=info
-        --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: celery -A vShop beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
     env_file: .env
     depends_on:
       redis:
