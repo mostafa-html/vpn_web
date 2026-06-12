@@ -1,8 +1,8 @@
 # docker-compose.yml  — vShop Multi-Tenant Proxy Billing Stack
 
 volumes:
-  protected_media:    # private upload store (transaction screenshots)
-  staticfiles:        # collectstatic output, shared with potential nginx sidecar
+  protected_media:
+  staticfiles:
   redis_data:
 
 networks:
@@ -11,7 +11,7 @@ networks:
 
 services:
 
-  # ── 1. Message Broker & Cache ──────────────────────────────────────────
+  # ── 1. Redis ─────────────────────────────────────────────────────────────────
   redis:
     image: redis:alpine
     restart: unless-stopped
@@ -26,7 +26,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── 2. Django Web Application (Gunicorn) ───────────────────────────────
+  # ── 2. Django / Gunicorn ───────────────────────────────────────────────────
   web:
     build: .
     restart: unless-stopped
@@ -42,13 +42,13 @@ services:
     networks:
       - vshop_net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/login/')\""]
-      interval: 30s
+      test: ["CMD", "curl", "-f", "http://localhost:8000/login/"]
+      interval: 15s
       timeout: 10s
-      retries: 3
-      start_period: 20s
+      retries: 5
+      start_period: 60s
 
-  # ── 3. Celery Task Consumer ───────────────────────────────────────────────
+  # ── 3. Celery Worker ─────────────────────────────────────────────────────────
   celery_worker:
     build: .
     restart: unless-stopped
@@ -59,12 +59,10 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      web:
-        condition: service_healthy
     networks:
       - vshop_net
 
-  # ── 4. Celery Beat Scheduler ───────────────────────────────────────────────
+  # ── 4. Celery Beat ────────────────────────────────────────────────────────────
   celery_beat:
     build: .
     restart: unless-stopped
@@ -72,8 +70,6 @@ services:
     env_file: .env
     depends_on:
       redis:
-        condition: service_healthy
-      web:
         condition: service_healthy
     networks:
       - vshop_net
