@@ -10,9 +10,10 @@ from django.db.models import Count, Q
 
 from billing_engine.models import (
     CustomUser, VPNPlan, Transaction, ProxySubscription,
-    XuiServer, XuiInbound, PricingTier
+    XuiServer, XuiInbound, PricingTier, SubscriptionConfigMapping
 )
 from billing_engine.services import process_purchase, InsufficientFundsError
+from billing_engine.xui_client import XuiAPIClient, XuiAPIException
 from .forms import (
     LoginForm, RegisterForm, WalletTopUpForm, PlanPurchaseForm,
     CustomPurchaseForm, CreateManagedUserForm, VPNPlanForm,
@@ -27,7 +28,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _role_redirect(user):
-    """Return the correct dashboard URL name for the user's role."""
     if user.role == CustomUser.Role.MASTER_ADMIN:
         return 'frontend:master_dashboard'
     elif user.role == CustomUser.Role.SUB_ADMIN:
@@ -78,7 +78,7 @@ def register_view(request):
 
 
 # ---------------------------------------------------------------------------
-# END USER – Dashboard
+# END USER
 # ---------------------------------------------------------------------------
 
 @login_required
@@ -87,7 +87,6 @@ def dashboard(request):
         return redirect('frontend:master_dashboard')
     if request.user.role == CustomUser.Role.SUB_ADMIN:
         return redirect('frontend:subadmin_dashboard')
-
     user = request.user
     active_subs = ProxySubscription.objects.filter(user=user, is_active=True).count()
     recent_txns = Transaction.objects.filter(user=user).order_by('-created_at')[:5]
@@ -97,14 +96,9 @@ def dashboard(request):
     })
 
 
-# ---------------------------------------------------------------------------
-# END USER – Plans
-# ---------------------------------------------------------------------------
-
 @login_required
 def plans(request):
     plans_qs = VPNPlan.objects.filter(is_visible=True).order_by('total_gb')
-    # Try to get applicable pricing tier for display
     user = request.user
     pricing_target = user.parent_manager if (user.role == CustomUser.Role.END_USER and user.parent_manager) else user
     tier = (
@@ -151,10 +145,6 @@ def custom_plan(request):
     return render(request, 'frontend/custom_plan.html', {'form': form})
 
 
-# ---------------------------------------------------------------------------
-# END USER – Subscriptions
-# ---------------------------------------------------------------------------
-
 @login_required
 def subscriptions(request):
     user = request.user
@@ -180,10 +170,6 @@ def subscription_detail(request, sub_id):
         'remaining_days': remaining_days,
     })
 
-
-# ---------------------------------------------------------------------------
-# END USER – Wallet & Transactions
-# ---------------------------------------------------------------------------
 
 @login_required
 def wallet(request):
@@ -305,6 +291,58 @@ def master_server_toggle(request, server_id):
         state = 'activated' if server.is_active else 'deactivated'
         messages.success(request, f'Server "{server.name}" {state}.')
     return redirect('frontend:master_servers')
+
+
+@require_role('MASTER_ADMIN')
+def master_server_clients(request, server_id):
+    """
+    Show all clients currently on the 3x-ui server (live from API),
+    cross-referenced with local DB subscriptions so you can see
+    which are managed by vShop and which are untracked.
+    """
+    server = get_object_or_404(XuiServer, id=server_id)
+    clients = []
+    error = None
+
+    # Build a lookup: xui_client_uuid -> ProxySubscription
+    managed_uuids = {
+        m.subscription.xui_client_uuid: m.subscription
+        for m in SubscriptionConfigMapping.objects.select_related(
+            'subscription', 'subscription__user', 'inbound'
+        ).filter(inbound__server=server)
+    }
+
+    try:
+        result = XuiAPIClient(server).get_inbounds()
+        for inbound in result.get('obj', []):
+            import json
+            try:
+                settings_obj = json.loads(inbound.get('settings', '{}'))
+            except (json.JSONDecodeError, TypeError):
+                settings_obj = {}
+            for client in settings_obj.get('clients', []):
+                uuid = client.get('id', '')
+                total_bytes = inbound.get('up', 0) + inbound.get('down', 0)
+                clients.append({
+                    'inbound_id': inbound.get('id'),
+                    'inbound_tag': inbound.get('tag', '?'),
+                    'protocol': inbound.get('protocol', '?').upper(),
+                    'uuid': uuid,
+                    'email': client.get('email', ''),
+                    'enable': client.get('enable', True),
+                    'total_gb': round(total_bytes / (1024 ** 3), 2),
+                    'subscription': managed_uuids.get(uuid),  # None = untracked
+                })
+    except XuiAPIException as e:
+        error = str(e)
+
+    return render(request, 'frontend/master_server_clients.html', {
+        'server': server,
+        'clients': clients,
+        'error': error,
+        'managed_count': sum(1 for c in clients if c['subscription']),
+        'untracked_count': sum(1 for c in clients if not c['subscription']),
+    })
 
 
 @require_role('MASTER_ADMIN')

@@ -1,0 +1,86 @@
+{% extends 'frontend/base.html' %}
+{% block title %}Clients — {{ server.name }}{% endblock %}
+{% block content %}
+<div class="max-w-7xl mx-auto px-4 py-8">
+
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-white">{{ server.name }} — Live Clients</h1>
+      <p class="text-slate-400 text-sm mt-1">{{ server.get_host }}:{{ server.api_port }}</p>
+    </div>
+    <a href="{% url 'frontend:master_servers' %}" class="text-indigo-400 hover:text-indigo-300 text-sm">← Back to Servers</a>
+  </div>
+
+  {% if error %}
+  <div class="bg-red-900/40 border border-red-500 text-red-300 rounded-lg p-4 mb-6">
+    <strong>API Error:</strong> {{ error }}
+  </div>
+  {% endif %}
+
+  <!-- Stats -->
+  <div class="grid grid-cols-3 gap-4 mb-6">
+    <div class="bg-slate-800 rounded-lg p-4 text-center">
+      <div class="text-2xl font-bold text-white">{{ clients|length }}</div>
+      <div class="text-slate-400 text-sm">Total Clients</div>
+    </div>
+    <div class="bg-slate-800 rounded-lg p-4 text-center">
+      <div class="text-2xl font-bold text-green-400">{{ managed_count }}</div>
+      <div class="text-slate-400 text-sm">Managed by vShop</div>
+    </div>
+    <div class="bg-slate-800 rounded-lg p-4 text-center">
+      <div class="text-2xl font-bold text-yellow-400">{{ untracked_count }}</div>
+      <div class="text-slate-400 text-sm">Untracked (external)</div>
+    </div>
+  </div>
+
+  {% if clients %}
+  <div class="bg-slate-800 rounded-xl overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-700 text-slate-300">
+        <tr>
+          <th class="px-4 py-3 text-left">Email</th>
+          <th class="px-4 py-3 text-left">UUID</th>
+          <th class="px-4 py-3 text-left">Inbound</th>
+          <th class="px-4 py-3 text-left">Protocol</th>
+          <th class="px-4 py-3 text-left">Traffic</th>
+          <th class="px-4 py-3 text-left">Status</th>
+          <th class="px-4 py-3 text-left">vShop User</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-700">
+        {% for client in clients %}
+        <tr class="hover:bg-slate-700/50 text-slate-300">
+          <td class="px-4 py-3 font-mono text-xs">{{ client.email|default:"-" }}</td>
+          <td class="px-4 py-3 font-mono text-xs text-slate-500">{{ client.uuid|slice:":8" }}…</td>
+          <td class="px-4 py-3">{{ client.inbound_tag }}</td>
+          <td class="px-4 py-3">
+            <span class="px-2 py-0.5 rounded text-xs bg-indigo-900 text-indigo-300">{{ client.protocol }}</span>
+          </td>
+          <td class="px-4 py-3">{{ client.total_gb }} GB</td>
+          <td class="px-4 py-3">
+            {% if client.enable %}
+              <span class="px-2 py-0.5 rounded text-xs bg-green-900 text-green-300">Active</span>
+            {% else %}
+              <span class="px-2 py-0.5 rounded text-xs bg-red-900 text-red-300">Disabled</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3">
+            {% if client.subscription %}
+              <span class="text-green-400 text-xs">{{ client.subscription.user.username }}</span>
+            {% else %}
+              <span class="text-yellow-500 text-xs">Untracked</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% elif not error %}
+  <div class="text-center py-16 text-slate-500">
+    <p class="text-lg">No clients found on this server.</p>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
