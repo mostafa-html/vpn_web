@@ -16,7 +16,7 @@ class XuiAPIException(Exception):
 class XuiAPIClient:
     """
     3x-ui URL layout (example base_path=/secret/):
-      login POST -> https://host:port/secret/
+      login POST -> https://host:port/secret/login
       API        -> https://host:port/secret/panel/api/...
     """
     def __init__(self, server: XuiServer):
@@ -31,19 +31,15 @@ class XuiAPIClient:
         self.backoff_factor = 2
 
     def _url(self, path: str) -> str:
-        """Build URL for API endpoints under base_path, e.g. 'panel/api/inbounds/list'."""
+        """Build URL for any endpoint under base_path."""
         return f"{self.base_url}{self.base_path}{path.lstrip('/')}"
-
-    def _login_url(self) -> str:
-        """Login POST goes directly to the base_path (no extra segment)."""
-        return f"{self.base_url}{self.base_path}"
 
     def _get_session_cookie(self) -> Dict[str, str]:
         cached = cache.get(self.cache_key)
         if cached:
             return cached
 
-        login_url = self._login_url()
+        login_url = self._url('login')
         logger.info(f"Authenticating at {login_url}")
         try:
             response = requests.post(
@@ -55,13 +51,13 @@ class XuiAPIClient:
             )
             if response.status_code == 403:
                 raise XuiAPIException(
-                    f"Authentication failed (403). Check username/password for '{self.server.name}'. "
-                    f"Login URL: {login_url}"
+                    f"Authentication failed (403 Forbidden) — wrong username or password "
+                    f"for server '{self.server.name}'. URL: {login_url}"
                 )
             response.raise_for_status()
             json_data = response.json()
             if not json_data.get("success", True):
-                raise XuiAPIException(f"Login rejected: {json_data.get('msg', 'unknown')}")
+                raise XuiAPIException(f"Login rejected by panel: {json_data.get('msg', 'unknown')}")
             cookie_dict = response.cookies.get_dict()
             if not cookie_dict:
                 raise XuiAPIException("Login OK but no session cookie returned.")
