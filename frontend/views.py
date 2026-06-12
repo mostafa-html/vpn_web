@@ -594,6 +594,15 @@ def master_pricing(request):
 
 
 @require_role('MASTER_ADMIN')
+def master_pricing_delete(request, tier_id):
+    tier = get_object_or_404(PricingTier, id=tier_id)
+    if request.method == 'POST':
+        tier.delete()
+        messages.success(request, 'Pricing tier deleted.')
+    return redirect('frontend:master_pricing')
+
+
+@require_role('MASTER_ADMIN')
 def master_subscriptions(request):
     search = request.GET.get('q', '').strip().lower()
     status_filter = request.GET.get('status', '')
