@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from requests.exceptions import ConnectionError, HTTPError, RequestException, Timeout
@@ -37,7 +37,8 @@ class XuiAPIClient:
     update_client() POST body uses the settings.clients schema:
       totalGB    : plain GB integer
       expiryTime : Unix milliseconds
-      id         : UUID string  (must be the panel UUID, not the DB UUID)
+      id         : UUID string
+      inboundIds : ALL inbound IDs the client belongs to (not just one)
     """
 
     def __init__(self, server: XuiServer):
@@ -168,12 +169,12 @@ class XuiAPIClient:
     def _normalise_client(cs: Dict[str, Any]) -> Dict[str, Any]:
         """
         Convert a clientStats entry into the shape expected by the update endpoint.
-          uuid  -> id   (panel UUID string)
-          total -> totalGB  (bytes -> plain GB)
+          uuid  -> id      (panel UUID string)
+          total -> totalGB (bytes -> plain GB)
         """
         total_bytes = int(cs.get("total", 0))
         total_gb = round(total_bytes / BYTES_PER_GB) if total_bytes > 0 else 0
-        normalised = {
+        return {
             "id": cs.get("uuid", ""),
             "email": cs.get("email", ""),
             "totalGB": total_gb,
@@ -182,25 +183,38 @@ class XuiAPIClient:
             "subId": cs.get("subId", ""),
             "reset": int(cs.get("reset", 0)),
         }
-        return normalised
 
     def _find_client_and_inbounds(
         self, email: str
-    ):
+    ) -> Tuple[Dict[str, Any], List[int]]:
         """
-        Returns (normalised_client_dict, [xui_inbound_id, ...]) by scanning
-        clientStats across all inbounds. Raises XuiAPIException if not found.
+        Scan ALL inbounds and return:
+          - normalised client dict (from the first matching clientStats entry)
+          - list of ALL inbound IDs the client appears in
+
+        A client attached to multiple inbounds (e.g. frank-new + delu-nether)
+        must have ALL those IDs in the update payload or the panel returns
+        'record not found'.
         """
         inbounds_data = self.get_inbounds()
+        matched_client: Optional[Dict[str, Any]] = None
+        matched_inbound_ids: List[int] = []
+
         for inbound in inbounds_data.get("obj", []):
             inbound_id = inbound.get("id")
             for cs in inbound.get("clientStats", []):
                 if cs.get("email", "").strip().lower() == email.strip().lower():
-                    normalised = self._normalise_client(cs)
-                    return normalised, [inbound_id]
-        raise XuiAPIException(
-            f"Client '{email}' not found on server '{self.server.name}'."
-        )
+                    if matched_client is None:
+                        matched_client = self._normalise_client(cs)
+                    matched_inbound_ids.append(inbound_id)
+                    break  # each inbound has the client at most once
+
+        if matched_client is None:
+            raise XuiAPIException(
+                f"Client '{email}' not found on server '{self.server.name}'."
+            )
+
+        return matched_client, matched_inbound_ids
 
     # ------------------------------------------------------------------
     # Clients
@@ -213,14 +227,15 @@ class XuiAPIClient:
         """
         logger.warning("[XUI_GET_CLIENT] looking up email=%s on server=%s", email, self.server.name)
         try:
-            normalised, _ = self._find_client_and_inbounds(email)
+            normalised, inbound_ids = self._find_client_and_inbounds(email)
             logger.warning(
-                "[XUI_GET_CLIENT] FOUND email=%s uuid=%s totalGB=%s expiryTime=%s enable=%s",
+                "[XUI_GET_CLIENT] FOUND email=%s uuid=%s totalGB=%s expiryTime=%s enable=%s inbounds=%s",
                 email,
                 normalised["id"],
                 normalised["totalGB"],
                 normalised["expiryTime"],
                 normalised["enable"],
+                inbound_ids,
             )
             return normalised
         except XuiAPIException:
@@ -259,7 +274,7 @@ class XuiAPIClient:
     def update_client(
         self,
         email: str,
-        client_uuid: str,        # DB UUID — kept for API compat but NOT used for endpoint URL
+        client_uuid: str,
         total_gb: int = 0,
         expiry_time_ms: int = 0,
         enable: bool = True,
@@ -268,22 +283,16 @@ class XuiAPIClient:
         """
         3x-ui v3: POST /panel/api/clients/update/<panel_uuid>
 
-        Key rule: the endpoint URL must use the UUID that 3x-ui assigned
-        to the client (returned by clientStats as 'uuid'), which may differ
-        from the UUID stored in our DB (xui_client_uuid) for manually-created
-        clients. We always fetch the real panel UUID via get_client_by_email().
-
-        If inbound_ids is empty or None we look it up from the panel response
-        so the payload is never missing inboundIds.
+        Always uses the panel UUID from clientStats (not the DB UUID).
+        Always sends ALL inbound IDs the client belongs to.
         """
         logger.warning(
             "[XUI_TOPUP_START] server=%s email=%s db_uuid=%s new_total_gb=%s new_expiry_ms=%s enable=%s",
             self.server.name, email, client_uuid, total_gb, expiry_time_ms, enable,
         )
 
-        # Fetch real panel UUID + inbound list in one shot
         current, panel_inbound_ids = self._find_client_and_inbounds(email)
-        panel_uuid = current["id"]  # this is what the update endpoint keys on
+        panel_uuid = current["id"]
 
         logger.warning(
             "[XUI_TOPUP_CURRENT] server=%s email=%s panel_uuid=%s current_totalGB=%s "
@@ -293,20 +302,15 @@ class XuiAPIClient:
             panel_inbound_ids,
         )
 
-        # Use caller's inbound_ids if provided and non-empty, else fall back to panel
-        effective_inbound_ids = (
-            [int(i) for i in inbound_ids]
-            if inbound_ids
-            else panel_inbound_ids
-        )
+        # Always use the full panel inbound list — caller's list may be incomplete
+        effective_inbound_ids = panel_inbound_ids
 
         merged = dict(current)
-        merged["id"] = panel_uuid       # keep the panel UUID as 'id' in the body
+        merged["id"] = panel_uuid
         merged["email"] = email
         merged["totalGB"] = int(total_gb)
         merged["expiryTime"] = int(expiry_time_ms)
         merged["enable"] = bool(enable)
-        # strip clientStats-only fields that don't belong in the update body
         for drop in ("inboundId", "up", "down", "lastOnline", "uuid", "total"):
             merged.pop(drop, None)
 
@@ -321,7 +325,6 @@ class XuiAPIClient:
             json.dumps(payload, ensure_ascii=False, default=str),
         )
 
-        # Use panel_uuid in the URL, NOT client_uuid from DB
         result = self._request("POST", f"panel/api/clients/update/{panel_uuid}", json_data=payload)
 
         logger.warning(
@@ -337,7 +340,8 @@ class XuiAPIClient:
     ) -> Dict[str, Any]:
         """
         Disable a client by setting enable=False.
-        Scans clientStats to find the email for the given UUID.
+        Scans clientStats to find the email, then calls update_client()
+        which will automatically collect all inbound IDs.
         """
         logger.warning(
             "[XUI_DISABLE_CLIENT] inbound_id=%s uuid=%s server=%s",
@@ -356,7 +360,6 @@ class XuiAPIClient:
                         total_gb=norm["totalGB"],
                         expiry_time_ms=norm["expiryTime"],
                         enable=False,
-                        inbound_ids=[inbound_id],
                     )
         raise XuiAPIException(
             f"Client UUID '{client_uuid}' not found in inbound {inbound_id} "
