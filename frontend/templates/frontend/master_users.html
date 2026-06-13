@@ -2,7 +2,13 @@
 {% block title %}Users — vShop Admin{% endblock %}
 {% block content %}
 <div class="space-y-6">
-  <h1 class="text-2xl font-bold text-white">Users</h1>
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-white">Users</h1>
+    <button onclick="document.getElementById('createUserModal').classList.remove('hidden')"
+      class="btn-primary text-sm py-2 px-4">
+      <i class="fa-solid fa-user-plus mr-1"></i> Create User
+    </button>
+  </div>
 
   <!-- Search & Filter -->
   <form method="get" class="flex flex-wrap gap-3 items-end">
@@ -63,6 +69,58 @@
         {% endfor %}
       </tbody>
     </table>
+  </div>
+</div>
+
+<!-- Create User Modal -->
+<div id="createUserModal" class="hidden fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+  <div class="bg-slate-800 border border-slate-700 rounded-xl shadow-xl w-full max-w-md p-6 space-y-5">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-white">Create End User</h2>
+      <button onclick="document.getElementById('createUserModal').classList.add('hidden')"
+        class="text-slate-400 hover:text-white text-xl leading-none">&times;</button>
+    </div>
+
+    <p class="text-slate-400 text-sm">
+      Username and password will both be set to the email address you enter.
+      The user can log in immediately using their email as both fields.
+    </p>
+
+    <form method="post" action="{% url 'frontend:master_create_user' %}" class="space-y-4">
+      {% csrf_token %}
+
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Email (= username = password)</label>
+        <input type="email" name="email" required autofocus
+          placeholder="user@example.com"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-indigo-500">
+      </div>
+
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Role</label>
+        <select name="role"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500">
+          <option value="END_USER">End User</option>
+          <option value="SUB_ADMIN">Sub Admin</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-xs text-slate-400 mb-1">Parent Manager <span class="text-slate-500">(optional)</span></label>
+        <input type="text" name="parent_username"
+          placeholder="Sub-admin username…"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-indigo-500">
+      </div>
+
+      <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn-primary flex-1 py-2 text-sm">Create</button>
+        <button type="button"
+          onclick="document.getElementById('createUserModal').classList.add('hidden')"
+          class="flex-1 py-2 text-sm bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">
+          Cancel
+        </button>
+      </div>
+    </form>
   </div>
 </div>
 {% endblock %}

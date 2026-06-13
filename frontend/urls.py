@@ -27,6 +27,7 @@ urlpatterns = [
     # Master admin
     path('master/', views.master_dashboard, name='master_dashboard'),
     path('master/users/', views.master_users, name='master_users'),
+    path('master/users/create/', views.master_create_user, name='master_create_user'),
     path('master/servers/', views.master_servers, name='master_servers'),
     path('master/servers/<uuid:server_id>/toggle/', views.master_server_toggle, name='master_server_toggle'),
     path('master/servers/<uuid:server_id>/clients/', views.master_server_clients, name='master_server_clients'),
