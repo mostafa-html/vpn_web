@@ -40,12 +40,10 @@ class XuiServer(models.Model):
         max_length=255, blank=True, default='/',
         help_text='3x-ui secret base path, e.g. /4bfAPdC269HYSj1c24/ (include slashes)'
     )
-    # API token from Panel Settings -> Security -> API Token (3x-ui v3+)
     api_token = models.CharField(
         max_length=512, blank=True, default='',
         help_text='Bearer token from 3x-ui Panel Settings -> Security -> API Token'
     )
-    # Kept for reference / legacy but no longer used for auth
     admin_username = models.CharField(max_length=150, blank=True, default='')
     admin_password = models.CharField(max_length=255, blank=True, default='')
     max_client_capacity = models.PositiveIntegerField()
@@ -150,7 +148,8 @@ class Transaction(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="transactions")
     type = models.CharField(max_length=20, choices=TypeChoices.choices)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    screenshot = models.ImageField(upload_to="protected_media/transactions/")
+    # blank=True so system-generated transactions (topups, renewals) don't need a receipt image
+    screenshot = models.ImageField(upload_to="protected_media/transactions/", blank=True)
     payment_ref_code = models.CharField(
         max_length=100, unique=True, db_index=True,
         validators=[RegexValidator(regex=r"^[A-Z0-9]+$", message="Uppercase alphanumeric only.")]
@@ -184,7 +183,7 @@ class Transaction(models.Model):
 class ProxySubscription(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="subscriptions")
     xui_client_uuid = models.CharField(max_length=36)
-    subscription_url = models.URLField()
+    subscription_url = models.URLField(blank=True, default='')
     total_allocated_gb = models.PositiveIntegerField()
     used_gb = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
     expires_at = models.DateTimeField()
