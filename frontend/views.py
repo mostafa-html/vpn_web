@@ -106,9 +106,7 @@ def _get_pricing_for_user(user):
 
 
 def _build_subscription_url(server, client_uuid):
-    """Build the 3x-ui subscription URL for a client UUID.
-    Format: http(s)://<host>:<port><base_path>sub/<uuid>
-    """
+    """Build the 3x-ui subscription URL for a client UUID."""
     protocol = 'https' if server.use_ssl else 'http'
     host = server.get_host()
     base_path = server.get_base_path()  # always has trailing slash
@@ -116,10 +114,7 @@ def _build_subscription_url(server, client_uuid):
 
 
 def _get_live_client_data_for_uuid(server, target_uuid):
-    """Fetch live data for a single client UUID from 3x-ui.
-    Returns dict with keys: used_bytes, total_bytes, expiry_ms, enable, email
-    or None on error.
-    """
+    """Fetch live data for a single client UUID from 3x-ui."""
     try:
         result = XuiAPIClient(server).get_inbounds()
     except XuiAPIException as e:
@@ -158,6 +153,27 @@ def _get_live_client_data_for_uuid(server, target_uuid):
                 aggregated['expiry_ms'] = expiry_ms
 
     return aggregated if found else None
+
+
+def _create_internal_transaction(user, txn_type, amount, ref_code):
+    """Create an internal (system-generated) Transaction bypassing model validators.
+
+    Internal transactions do not have a user-uploaded screenshot and use
+    auto-generated ref codes that may not conform to the user-facing
+    UPPERCASE-ALPHANUMERIC-only rule.  We write directly via .save() with
+    validate=False to avoid triggering full_clean().
+    """
+    txn = Transaction(
+        user=user,
+        type=txn_type,
+        # Round to 2 dp to satisfy the DecimalField max_digits / decimal_places
+        amount=amount.quantize(Decimal('0.01')),
+        payment_ref_code=ref_code,
+        status=Transaction.StatusChoices.APPROVED,
+        screenshot='',  # blank is fine for internal records
+    )
+    txn.save()  # skip full_clean – validators are for user-submitted forms only
+    return txn
 
 
 # ---------------------------------------------------------------------------
@@ -271,13 +287,9 @@ def custom_plan(request):
 
 
 def _enrich_sub_with_live_data(sub):
+    """Attach live 3x-ui data to a ProxySubscription as extra attributes.
+    Also backfills DB fields if still at import defaults.
     """
-    Attach live 3x-ui data to a ProxySubscription object as extra attributes.
-    Also backfills DB fields (subscription_url, total_allocated_gb, expires_at)
-    if they are still at their import defaults.
-    Returns the same sub object (mutated with .live_* attributes).
-    """
-    # Find which server this sub belongs to via its mapping
     mapping = SubscriptionConfigMapping.objects.select_related(
         'inbound__server'
     ).filter(subscription=sub).first()
@@ -294,13 +306,11 @@ def _enrich_sub_with_live_data(sub):
 
     server = mapping.inbound.server
 
-    # Build subscription URL if missing
     if not sub.subscription_url:
         url = _build_subscription_url(server, sub.xui_client_uuid)
         sub.subscription_url = url
         ProxySubscription.objects.filter(pk=sub.pk).update(subscription_url=url)
 
-    # Fetch live stats
     live = _get_live_client_data_for_uuid(server, sub.xui_client_uuid)
     if live:
         used_gb = live['used_bytes'] / BYTES_PER_GB
@@ -308,7 +318,6 @@ def _enrich_sub_with_live_data(sub):
         sub.live_used_gb = round(used_gb, 3)
         sub.live_total_gb = round(total_gb, 2)
 
-        # Backfill DB if still zero
         update_fields = []
         if sub.total_allocated_gb == 0 and total_gb > 0:
             sub.total_allocated_gb = int(total_gb) or 1
@@ -322,7 +331,6 @@ def _enrich_sub_with_live_data(sub):
             sub.live_expiry_str = expiry_dt.strftime('%Y-%m-%d')
             remaining = (expiry_dt - datetime.now(tz=dt_timezone.utc)).days
             sub.live_remaining_days = max(remaining, 0)
-            # Backfill if expires_at is today or in the past (still at import default)
             if sub.expires_at <= timezone.now() + timedelta(minutes=1):
                 sub.expires_at = expiry_dt_aware
                 update_fields.append('expires_at')
@@ -386,6 +394,7 @@ def subscription_topup(request, sub_id):
     sub = get_object_or_404(ProxySubscription, id=sub_id, user=request.user)
     action = request.POST.get('action', '')
     price_per_gb, price_per_day = _get_pricing_for_user(request.user)
+    ts = int(timezone.now().timestamp())
 
     with db_transaction.atomic():
         user = CustomUser.objects.select_for_update().get(pk=request.user.pk)
@@ -397,26 +406,24 @@ def subscription_topup(request, sub_id):
                 extra_gb = 0
             if extra_gb <= 0:
                 messages.error(request, 'Enter a valid number of GB.')
-                return redirect('frontend:subscriptions')
+                return redirect('frontend:subscription_detail', sub_id=sub_id)
             if price_per_gb <= 0:
                 messages.error(request, 'No pricing configured. Contact support.')
-                return redirect('frontend:subscriptions')
-            cost = Decimal(str(extra_gb)) * price_per_gb
+                return redirect('frontend:subscription_detail', sub_id=sub_id)
+            cost = (Decimal(str(extra_gb)) * price_per_gb).quantize(Decimal('0.01'))
             if user.wallet_balance < cost:
                 messages.error(request, f'Insufficient balance. Need {cost} IRR, have {user.wallet_balance} IRR.')
-                return redirect('frontend:subscriptions')
+                return redirect('frontend:subscription_detail', sub_id=sub_id)
             user.wallet_balance -= cost
             user.save(update_fields=['wallet_balance'])
             sub.total_allocated_gb += extra_gb
             sub.is_active = True
             sub.save(update_fields=['total_allocated_gb', 'is_active', 'updated_at'])
-            Transaction.objects.create(
+            _create_internal_transaction(
                 user=user,
-                type=Transaction.TypeChoices.PLAN_PURCHASE,
+                txn_type=Transaction.TypeChoices.PLAN_PURCHASE,
                 amount=cost,
-                payment_ref_code=f'TOPUP-{sub.id}-{int(timezone.now().timestamp())}',
-                status=Transaction.StatusChoices.APPROVED,
-                screenshot='',
+                ref_code=f'TOPUP{sub.id}T{ts}',
             )
             messages.success(request, f'{extra_gb} GB added. Cost: {cost} IRR.')
 
@@ -427,34 +434,32 @@ def subscription_topup(request, sub_id):
                 extra_days = 0
             if extra_days <= 0:
                 messages.error(request, 'Enter a valid number of days.')
-                return redirect('frontend:subscriptions')
+                return redirect('frontend:subscription_detail', sub_id=sub_id)
             if price_per_day <= 0:
                 messages.error(request, 'No pricing configured. Contact support.')
-                return redirect('frontend:subscriptions')
-            cost = Decimal(str(extra_days)) * price_per_day
+                return redirect('frontend:subscription_detail', sub_id=sub_id)
+            cost = (Decimal(str(extra_days)) * price_per_day).quantize(Decimal('0.01'))
             if user.wallet_balance < cost:
                 messages.error(request, f'Insufficient balance. Need {cost} IRR, have {user.wallet_balance} IRR.')
-                return redirect('frontend:subscriptions')
+                return redirect('frontend:subscription_detail', sub_id=sub_id)
             user.wallet_balance -= cost
             user.save(update_fields=['wallet_balance'])
             base = max(sub.expires_at, timezone.now())
             sub.expires_at = base + timedelta(days=extra_days)
             sub.is_active = True
             sub.save(update_fields=['expires_at', 'is_active', 'updated_at'])
-            Transaction.objects.create(
+            _create_internal_transaction(
                 user=user,
-                type=Transaction.TypeChoices.PLAN_PURCHASE,
+                txn_type=Transaction.TypeChoices.PLAN_PURCHASE,
                 amount=cost,
-                payment_ref_code=f'RENEW-{sub.id}-{int(timezone.now().timestamp())}',
-                status=Transaction.StatusChoices.APPROVED,
-                screenshot='',
+                ref_code=f'RENEW{sub.id}T{ts}',
             )
             messages.success(request, f'{extra_days} days added. Cost: {cost} IRR.')
 
         else:
             messages.error(request, 'Invalid action.')
 
-    return redirect('frontend:subscriptions')
+    return redirect('frontend:subscription_detail', sub_id=sub_id)
 
 
 @login_required
@@ -633,8 +638,6 @@ def _sync_server_inbounds_and_clients(server):
         inbound_map[ib['id']] = (inbound_obj, ib)
         inbound_count += 1
 
-    # Build per-uuid aggregated data (same as _build_live_client_map but also
-    # carries per-client totalGB and expiryTime from the settings payload)
     uuid_to_data = {}
     for xui_id, (inbound_obj, ib) in inbound_map.items():
         settings_obj = _parse_field(ib.get('settings', {}))
@@ -680,13 +683,12 @@ def _sync_server_inbounds_and_clients(server):
         if owner is None:
             owner = import_user
 
-        # Derive real values
         total_gb = int(data['total_bytes'] / BYTES_PER_GB) if data['total_bytes'] else 0
         used_gb_val = round(data['used_bytes'] / BYTES_PER_GB, 3)
         if data['expiry_ms']:
             expires_at = datetime.fromtimestamp(data['expiry_ms'] / 1000, tz=dt_timezone.utc)
         else:
-            expires_at = timezone.now() + timedelta(days=36500)  # no expiry = 100 yrs
+            expires_at = timezone.now() + timedelta(days=36500)
 
         sub_url = _build_subscription_url(server, uuid)
 
