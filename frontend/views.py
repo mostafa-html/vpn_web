@@ -426,6 +426,55 @@ def master_users(request):
 
 
 @require_role('MASTER_ADMIN')
+def master_create_user(request):
+    """Create an end user whose username and password both equal their email.
+    This lets existing 3x-ui clients log in immediately without re-registering.
+    """
+    if request.method != 'POST':
+        return redirect('frontend:master_users')
+
+    email = request.POST.get('email', '').strip().lower()
+    role_value = request.POST.get('role', 'END_USER').strip()
+    parent_username = request.POST.get('parent_username', '').strip()
+
+    if not email:
+        messages.error(request, 'Email is required.')
+        return redirect('frontend:master_users')
+
+    # username = email (Django allows email-format usernames up to 150 chars)
+    if CustomUser.objects.filter(username=email).exists():
+        messages.error(request, f'A user with username "{email}" already exists.')
+        return redirect('frontend:master_users')
+
+    # Resolve role
+    valid_roles = {r for r, _ in CustomUser.Role.choices}
+    if role_value not in valid_roles:
+        role_value = CustomUser.Role.END_USER
+
+    # Resolve optional parent manager
+    parent = None
+    if parent_username:
+        parent = CustomUser.objects.filter(username=parent_username).first()
+        if not parent:
+            messages.error(request, f'Parent manager "{parent_username}" not found.')
+            return redirect('frontend:master_users')
+
+    new_user = CustomUser.objects.create_user(
+        username=email,
+        email=email,
+        password=email,  # password = email, user should change after first login
+        role=role_value,
+        parent_manager=parent,
+    )
+    messages.success(
+        request,
+        f'User "{new_user.username}" created. '
+        f'They can log in with their email as both username and password.'
+    )
+    return redirect('frontend:master_users')
+
+
+@require_role('MASTER_ADMIN')
 def master_servers(request):
     form = XuiServerForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
