@@ -155,24 +155,83 @@ def _get_live_client_data_for_uuid(server, target_uuid):
     return aggregated if found else None
 
 
-def _create_internal_transaction(user, txn_type, amount, ref_code):
-    """Create an internal (system-generated) Transaction bypassing model validators.
-
-    Internal transactions do not have a user-uploaded screenshot and use
-    auto-generated ref codes that may not conform to the user-facing
-    UPPERCASE-ALPHANUMERIC-only rule.  We write directly via .save() with
-    validate=False to avoid triggering full_clean().
+def _push_client_to_xui(sub, new_total_gb_bytes: int = None, new_expiry_ms: int = None):
     """
+    Push updated traffic/expiry values for sub's client to every inbound it is
+    mapped to on 3x-ui.  Called after DB changes are committed.
+
+    Parameters (both optional — pass only what changed):
+        new_total_gb_bytes : new total traffic cap in BYTES  (0 = unlimited)
+        new_expiry_ms      : new expiry as Unix milliseconds (0 = never)
+
+    We first fetch the current live values and merge, so we never accidentally
+    zero-out a field we didn't intend to change.
+    """
+    mappings = SubscriptionConfigMapping.objects.select_related('inbound__server').filter(subscription=sub)
+    if not mappings.exists():
+        logger.warning('_push_client_to_xui: no mappings for sub %s', sub.pk)
+        return
+
+    for mapping in mappings:
+        server = mapping.inbound.server
+        inbound_id = mapping.inbound.xui_inbound_id
+        client_email = mapping.xui_client_email
+        client_uuid = sub.xui_client_uuid
+
+        # Fetch current live state so we only overwrite what we intend to
+        try:
+            inbounds_resp = XuiAPIClient(server).get_inbounds()
+        except XuiAPIException as e:
+            logger.error('Cannot fetch inbounds for server %s: %s', server.name, e)
+            continue
+
+        current_total = 0
+        current_expiry = 0
+        current_enable = True
+        for ib in inbounds_resp.get('obj', []):
+            if ib.get('id') != inbound_id:
+                continue
+            for cli in _parse_field(ib.get('settings', {})).get('clients', []):
+                if cli.get('id') == client_uuid:
+                    current_total = int(cli.get('totalGB', 0))
+                    current_expiry = int(cli.get('expiryTime', 0))
+                    current_enable = cli.get('enable', True)
+                    break
+
+        push_total = new_total_gb_bytes if new_total_gb_bytes is not None else current_total
+        push_expiry = new_expiry_ms if new_expiry_ms is not None else current_expiry
+
+        try:
+            XuiAPIClient(server).update_client(
+                inbound_id=inbound_id,
+                client_uuid=client_uuid,
+                email=client_email,
+                total_gb=push_total,
+                expiry_time_ms=push_expiry,
+                enable=current_enable,
+            )
+            logger.info(
+                'Pushed to 3x-ui: sub=%s inbound=%s totalGB=%s expiry=%s',
+                sub.pk, inbound_id, push_total, push_expiry,
+            )
+        except XuiAPIException as e:
+            logger.error(
+                'Failed to push update to 3x-ui for sub %s inbound %s: %s',
+                sub.pk, inbound_id, e,
+            )
+
+
+def _create_internal_transaction(user, txn_type, amount, ref_code):
+    """Create a system-generated Transaction (no screenshot, auto ref code)."""
     txn = Transaction(
         user=user,
         type=txn_type,
-        # Round to 2 dp to satisfy the DecimalField max_digits / decimal_places
         amount=amount.quantize(Decimal('0.01')),
         payment_ref_code=ref_code,
         status=Transaction.StatusChoices.APPROVED,
-        screenshot='',  # blank is fine for internal records
+        screenshot='',
     )
-    txn.save()  # skip full_clean – validators are for user-submitted forms only
+    txn.save()
     return txn
 
 
@@ -396,6 +455,8 @@ def subscription_topup(request, sub_id):
     price_per_gb, price_per_day = _get_pricing_for_user(request.user)
     ts = int(timezone.now().timestamp())
 
+    xui_push_kwargs = {}  # filled per action, pushed after the atomic block
+
     with db_transaction.atomic():
         user = CustomUser.objects.select_for_update().get(pk=request.user.pk)
 
@@ -425,6 +486,8 @@ def subscription_topup(request, sub_id):
                 amount=cost,
                 ref_code=f'TOPUP{sub.id}T{ts}',
             )
+            # Convert new total GB -> bytes for 3x-ui
+            xui_push_kwargs['new_total_gb_bytes'] = sub.total_allocated_gb * BYTES_PER_GB
             messages.success(request, f'{extra_gb} GB added. Cost: {cost} IRR.')
 
         elif action == 'renew':
@@ -454,10 +517,25 @@ def subscription_topup(request, sub_id):
                 amount=cost,
                 ref_code=f'RENEW{sub.id}T{ts}',
             )
+            # Convert new expiry datetime -> Unix milliseconds for 3x-ui
+            xui_push_kwargs['new_expiry_ms'] = int(sub.expires_at.timestamp() * 1000)
             messages.success(request, f'{extra_days} days added. Cost: {cost} IRR.')
 
         else:
             messages.error(request, 'Invalid action.')
+
+    # Push to 3x-ui OUTSIDE the atomic block so a panel API failure
+    # doesn't roll back the billing transaction.
+    if xui_push_kwargs:
+        try:
+            _push_client_to_xui(sub, **xui_push_kwargs)
+        except Exception as e:
+            logger.error('3x-ui push failed for sub %s: %s', sub.pk, e)
+            messages.warning(
+                request,
+                'Balance deducted and DB updated, but could not reach the VPN panel. '
+                'Changes will appear on next sync.'
+            )
 
     return redirect('frontend:subscription_detail', sub_id=sub_id)
 

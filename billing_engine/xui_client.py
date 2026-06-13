@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -99,11 +100,42 @@ class XuiAPIClient:
         }
         return self._request("POST", "panel/api/inbounds/addClient", json_data=payload)
 
+    def update_client(self, inbound_id: int, client_uuid: str, email: str,
+                      total_gb: int = 0, expiry_time_ms: int = 0,
+                      enable: bool = True) -> Dict[str, Any]:
+        """
+        Update an existing client on a specific inbound.
+
+        Parameters
+        ----------
+        inbound_id    : 3x-ui numeric inbound id
+        client_uuid   : the client's UUID
+        email         : the client's email label (must match existing record)
+        total_gb      : new total traffic cap in bytes (0 = unlimited)
+        expiry_time_ms: new expiry as Unix milliseconds  (0 = never)
+        enable        : whether the client should be active
+        """
+        client_payload = {
+            "id": client_uuid,
+            "email": email,
+            "totalGB": total_gb,
+            "expiryTime": expiry_time_ms,
+            "enable": enable,
+        }
+        payload = {
+            "id": inbound_id,
+            "settings": json.dumps({"clients": [client_payload]}),
+        }
+        return self._request(
+            "POST",
+            f"panel/api/inbounds/updateClient/{client_uuid}",
+            json_data=payload,
+        )
+
     def get_client_traffic(self, email: str) -> Dict[str, Any]:
         return self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
 
     def sync_existing_clients(self) -> list:
-        import json
         result = self.get_inbounds()
         clients = []
         for inbound in result.get("obj", []):
