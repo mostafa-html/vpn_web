@@ -16,6 +16,7 @@ urlpatterns = [
     path('custom-plan/', views.custom_plan, name='custom_plan'),
     path('subscriptions/', views.subscriptions, name='subscriptions'),
     path('subscriptions/<int:sub_id>/', views.subscription_detail, name='subscription_detail'),
+    path('subscriptions/<int:sub_id>/topup/', views.subscription_topup, name='subscription_topup'),
     path('wallet/', views.wallet, name='wallet'),
     path('transactions/', views.transactions, name='transactions'),
     path('profile/change-password/', views.change_password, name='change_password'),

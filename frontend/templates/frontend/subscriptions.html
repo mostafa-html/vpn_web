@@ -1,82 +1,192 @@
 {% extends 'frontend/base.html' %}
-{% block title %}Subscriptions — vShop{% endblock %}
+{% block title %}My Subscriptions{% endblock %}
 {% block content %}
 <div class="space-y-6">
-  <h1 class="text-2xl font-bold text-white">My Subscriptions</h1>
-
-  <!-- Tab Toggle -->
-  <div class="flex gap-2" id="tabs">
-    <button onclick="switchTab('active')" id="tab-active" class="px-5 py-2 rounded-lg font-medium text-sm bg-indigo-600 text-white transition-colors">Active ({{ active_subs|length }})</button>
-    <button onclick="switchTab('expired')" id="tab-expired" class="px-5 py-2 rounded-lg font-medium text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors">Expired ({{ expired_subs|length }})</button>
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-white">My Subscriptions</h1>
+    <a href="{% url 'frontend:plans' %}" class="btn-primary text-sm px-4 py-2">+ Buy New Plan</a>
   </div>
 
-  <!-- Active Subs -->
-  <div id="pane-active">
-    {% if active_subs %}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {% for sub in active_subs %}
-      {% with pct=sub.used_gb|floatformat:0 %}
-      <a href="{% url 'frontend:subscription_detail' sub.id %}" class="card hover:border-indigo-500/50 transition-all block">
-        <div class="flex items-center justify-between mb-3">
-          <span class="font-mono text-xs text-slate-400">#{{ sub.xui_client_uuid|slice:':8' }}...</span>
-          <span class="badge-active">Active</span>
-        </div>
-        <div class="space-y-2 text-sm text-slate-300 mb-4">
-          <div class="flex justify-between"><span>Data Used</span><span class="font-semibold text-white">{{ sub.used_gb|floatformat:2 }} / {{ sub.total_allocated_gb }} GB</span></div>
-          <div class="w-full bg-slate-700 rounded-full h-2">
-            {% with usage_pct=sub.used_gb %}
-            <div class="h-2 rounded-full bg-green-500 progress-bar" data-usage-bar="{% widthratio sub.used_gb sub.total_allocated_gb 100 %}" style="width: {% widthratio sub.used_gb sub.total_allocated_gb 100 %}%;"></div>
-            {% endwith %}
-          </div>
-          <div class="flex justify-between"><span>Expires</span><span data-expires="{{ sub.expires_at|date:'c' }}" class="text-indigo-400 font-medium">{{ sub.expires_at|date:'M d, Y' }}</span></div>
-        </div>
-        <span class="text-indigo-400 text-xs">View details <i class="fa-solid fa-arrow-right ml-1"></i></span>
-      </a>
-      {% endwith %}
-      {% endfor %}
-    </div>
-    {% else %}
-    <div class="card text-center py-14">
-      <i class="fa-solid fa-satellite-dish text-slate-600 text-5xl mb-4"></i>
-      <p class="text-slate-300 text-lg font-medium">No active subscriptions</p>
-      <a href="{% url 'frontend:plans' %}" class="btn-primary mt-4 inline-flex"><i class="fa-solid fa-cart-shopping"></i> Buy a Plan</a>
-    </div>
-    {% endif %}
-  </div>
-
-  <!-- Expired Subs -->
-  <div id="pane-expired" class="hidden">
-    {% if expired_subs %}
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      {% for sub in expired_subs %}
-      <div class="card opacity-60">
-        <div class="flex items-center justify-between mb-2">
-          <span class="font-mono text-xs text-slate-400">#{{ sub.xui_client_uuid|slice:':8' }}...</span>
-          <span class="badge-expired">Expired</span>
-        </div>
-        <div class="text-sm text-slate-400">
-          <p>{{ sub.used_gb|floatformat:2 }} / {{ sub.total_allocated_gb }} GB &bull; Expired {{ sub.expires_at|date:'M d, Y' }}</p>
-        </div>
+  {% if messages %}
+    {% for msg in messages %}
+      <div class="px-4 py-3 rounded-lg text-sm
+        {% if msg.tags == 'error' %}bg-red-900/60 text-red-300 border border-red-700
+        {% else %}bg-green-900/60 text-green-300 border border-green-700{% endif %}">
+        {{ msg }}
       </div>
+    {% endfor %}
+  {% endif %}
+
+  <!-- Active -->
+  <div>
+    <h2 class="text-lg font-semibold text-slate-300 mb-3">Active ({{ active_subs|length }})</h2>
+    {% if active_subs %}
+      <div class="space-y-4">
+        {% for sub in active_subs %}
+          <div class="card space-y-4">
+            <!-- Header row -->
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-900 text-green-300 mb-1">Active</span>
+                <p class="text-white font-mono text-sm">{{ sub.xui_client_uuid }}</p>
+                {% if sub.expires_at %}
+                  <p class="text-slate-400 text-xs mt-0.5">Expires: {{ sub.expires_at|date:"Y-m-d" }}</p>
+                {% endif %}
+              </div>
+              <a href="{% url 'frontend:subscription_detail' sub.id %}" class="text-indigo-400 hover:text-indigo-300 text-sm whitespace-nowrap">Details →</a>
+            </div>
+
+            <!-- Usage bar -->
+            {% with used=sub.used_gb total=sub.total_allocated_gb %}
+              {% if total > 0 %}
+                {% widthratio used total 100 as pct %}
+                <div>
+                  <div class="flex justify-between text-xs text-slate-400 mb-1">
+                    <span>Used: {{ used }} GB</span>
+                    <span>Total: {{ total }} GB</span>
+                  </div>
+                  <div class="w-full bg-slate-700 rounded-full h-2">
+                    <div class="bg-indigo-500 h-2 rounded-full" style="width: {{ pct }}%"></div>
+                  </div>
+                </div>
+              {% endif %}
+            {% endwith %}
+
+            <!-- Subscription URL -->
+            {% if sub.subscription_url %}
+              <div class="bg-slate-900 rounded-lg p-3">
+                <p class="text-xs text-slate-400 mb-1">Subscription URL</p>
+                <div class="flex items-center gap-2">
+                  <input type="text" readonly value="{{ sub.subscription_url }}"
+                    class="flex-1 bg-transparent text-indigo-300 text-xs font-mono truncate outline-none"
+                    id="sub-url-{{ sub.id }}">
+                  <button onclick="copySubUrl('sub-url-{{ sub.id }}', this)"
+                    class="text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 transition whitespace-nowrap">
+                    Copy
+                  </button>
+                </div>
+              </div>
+            {% else %}
+              <p class="text-xs text-slate-500 italic">No subscription URL assigned yet. Contact support.</p>
+            {% endif %}
+
+            <!-- Add Traffic / Renew buttons -->
+            <div class="flex gap-3 pt-1">
+              <button onclick="openTopupModal({{ sub.id }}, 'traffic')"
+                class="flex-1 text-sm py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white transition font-medium">
+                + Add Traffic
+              </button>
+              <button onclick="openTopupModal({{ sub.id }}, 'renew')"
+                class="flex-1 text-sm py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white transition font-medium">
+                ↺ Renew Days
+              </button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="card text-center text-slate-400 py-10">
+        No active subscriptions. <a href="{% url 'frontend:plans' %}" class="text-indigo-400 hover:underline">Buy a plan</a>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- Expired -->
+  {% if expired_subs %}
+  <div>
+    <h2 class="text-lg font-semibold text-slate-300 mb-3">Expired / Inactive ({{ expired_subs|length }})</h2>
+    <div class="space-y-3">
+      {% for sub in expired_subs %}
+        <div class="card opacity-60">
+          <div class="flex items-center justify-between">
+            <div>
+              <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-slate-700 text-slate-400 mb-1">Inactive</span>
+              <p class="text-slate-300 font-mono text-sm">{{ sub.xui_client_uuid }}</p>
+            </div>
+            <a href="{% url 'frontend:subscription_detail' sub.id %}" class="text-slate-400 hover:text-white text-sm">Details →</a>
+          </div>
+        </div>
       {% endfor %}
     </div>
-    {% else %}
-    <div class="card text-center py-10"><p class="text-slate-400">No expired subscriptions.</p></div>
-    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- Add Traffic / Renew Modal -->
+<div id="topup-modal" class="fixed inset-0 bg-black/60 z-50 hidden flex items-center justify-center p-4">
+  <div class="bg-slate-800 rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+    <h3 id="topup-modal-title" class="text-lg font-bold text-white">Add Traffic</h3>
+
+    <form method="post" id="topup-form" action="">
+      {% csrf_token %}
+      <input type="hidden" name="action" id="topup-action" value="">
+
+      <!-- Traffic fields -->
+      <div id="traffic-fields" class="space-y-3">
+        <label class="block text-xs text-slate-400 mb-1">GB to add</label>
+        <input type="number" name="extra_gb" id="extra_gb" min="1" value="10"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-4 py-2 text-sm">
+        <p id="traffic-cost-preview" class="text-xs text-slate-400"></p>
+      </div>
+
+      <!-- Renew fields -->
+      <div id="renew-fields" class="space-y-3 hidden">
+        <label class="block text-xs text-slate-400 mb-1">Days to add</label>
+        <input type="number" name="extra_days" id="extra_days" min="1" value="30"
+          class="w-full bg-slate-900 border border-slate-600 text-white rounded-lg px-4 py-2 text-sm">
+        <p id="renew-cost-preview" class="text-xs text-slate-400"></p>
+      </div>
+
+      <p class="text-xs text-slate-400 pt-1">Wallet balance: <span class="text-white font-semibold">{{ request.user.wallet_balance }} IRR</span></p>
+
+      <div class="flex gap-3 pt-3">
+        <button type="submit" class="flex-1 btn-primary py-2 text-sm">Confirm</button>
+        <button type="button" onclick="closeTopupModal()" class="flex-1 py-2 text-sm bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition">Cancel</button>
+      </div>
+    </form>
   </div>
 </div>
-{% endblock %}
-{% block extra_js %}
+
 <script>
-function switchTab(tab) {
-  document.getElementById('pane-active').classList.toggle('hidden', tab !== 'active');
-  document.getElementById('pane-expired').classList.toggle('hidden', tab !== 'expired');
-  document.getElementById('tab-active').className = tab === 'active'
-    ? 'px-5 py-2 rounded-lg font-medium text-sm bg-indigo-600 text-white transition-colors'
-    : 'px-5 py-2 rounded-lg font-medium text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors';
-  document.getElementById('tab-expired').className = tab === 'expired'
-    ? 'px-5 py-2 rounded-lg font-medium text-sm bg-indigo-600 text-white transition-colors'
-    : 'px-5 py-2 rounded-lg font-medium text-sm bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors';
+const pricePerGb  = {{ price_per_gb|default:"0" }};
+const pricePerDay = {{ price_per_day|default:"0" }};
+
+function openTopupModal(subId, mode) {
+  const modal = document.getElementById('topup-modal');
+  const form  = document.getElementById('topup-form');
+  form.action = `/subscriptions/${subId}/topup/`;
+  document.getElementById('topup-action').value = mode;
+
+  const isTraffic = mode === 'traffic';
+  document.getElementById('topup-modal-title').textContent = isTraffic ? 'Add Traffic' : 'Renew Days';
+  document.getElementById('traffic-fields').classList.toggle('hidden', !isTraffic);
+  document.getElementById('renew-fields').classList.toggle('hidden',  isTraffic);
+  updatePreview();
+  modal.classList.remove('hidden');
+}
+
+function closeTopupModal() {
+  document.getElementById('topup-modal').classList.add('hidden');
+}
+
+function updatePreview() {
+  const gb   = parseInt(document.getElementById('extra_gb').value) || 0;
+  const days = parseInt(document.getElementById('extra_days').value) || 0;
+  document.getElementById('traffic-cost-preview').textContent =
+    pricePerGb > 0 ? `Estimated cost: ${(gb * pricePerGb).toLocaleString()} IRR` : '';
+  document.getElementById('renew-cost-preview').textContent =
+    pricePerDay > 0 ? `Estimated cost: ${(days * pricePerDay).toLocaleString()} IRR` : '';
+}
+
+document.getElementById('extra_gb').addEventListener('input', updatePreview);
+document.getElementById('extra_days').addEventListener('input', updatePreview);
+
+function copySubUrl(inputId, btn) {
+  const val = document.getElementById(inputId).value;
+  navigator.clipboard.writeText(val).then(() => {
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 2000);
+  });
 }
 </script>
 {% endblock %}

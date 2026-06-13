@@ -1,79 +1,123 @@
 {% extends 'frontend/base.html' %}
-{% block title %}Subscription Detail — vShop{% endblock %}
+{% block title %}Subscription Detail{% endblock %}
 {% block content %}
-<div class="max-w-2xl space-y-6">
-  <div class="flex items-center gap-4">
-    <a href="{% url 'frontend:subscriptions' %}" class="text-slate-400 hover:text-white"><i class="fa-solid fa-arrow-left"></i></a>
+<div class="max-w-xl mx-auto space-y-6">
+  <div class="flex items-center gap-3">
+    <a href="{% url 'frontend:subscriptions' %}" class="text-slate-400 hover:text-white text-sm">← Back</a>
     <h1 class="text-2xl font-bold text-white">Subscription Detail</h1>
-    {% if sub.is_active %}<span class="badge-active">Active</span>{% else %}<span class="badge-expired">Expired</span>{% endif %}
   </div>
 
-  <!-- Usage Card -->
-  <div class="card space-y-4">
-    <h2 class="font-semibold text-slate-300 text-sm uppercase tracking-wider">Data Usage</h2>
-    <div class="flex justify-between text-sm mb-1">
-      <span class="text-slate-400">Used</span>
-      <span class="text-white font-semibold">{{ sub.used_gb|floatformat:2 }} GB / {{ sub.total_allocated_gb }} GB</span>
-    </div>
-    <div class="w-full bg-slate-700 rounded-full h-3">
-      <div class="h-3 rounded-full progress-bar" data-usage-bar="{{ usage_pct }}" style="width: {{ usage_pct }}%;"></div>
-    </div>
-    <p class="text-xs text-slate-400">{{ usage_pct }}% used</p>
-  </div>
+  {% if messages %}
+    {% for msg in messages %}
+      <div class="px-4 py-3 rounded-lg text-sm
+        {% if msg.tags == 'error' %}bg-red-900/60 text-red-300 border border-red-700
+        {% else %}bg-green-900/60 text-green-300 border border-green-700{% endif %}">
+        {{ msg }}
+      </div>
+    {% endfor %}
+  {% endif %}
 
-  <!-- Time Card -->
-  <div class="card">
-    <h2 class="font-semibold text-slate-300 text-sm uppercase tracking-wider mb-3">Time Remaining</h2>
-    <div class="flex items-center gap-4">
-      <div class="w-14 h-14 rounded-xl bg-indigo-600/20 flex items-center justify-center">
-        <i class="fa-solid fa-clock text-indigo-400 text-2xl"></i>
+  <div class="card space-y-5">
+    <!-- Status badge -->
+    <div class="flex items-center justify-between">
+      <span class="px-3 py-1 rounded-full text-xs font-semibold
+        {% if sub.is_active %}bg-green-900 text-green-300{% else %}bg-slate-700 text-slate-400{% endif %}">
+        {% if sub.is_active %}Active{% else %}Inactive{% endif %}
+      </span>
+      <span class="text-slate-400 text-xs">ID: {{ sub.id }}</span>
+    </div>
+
+    <!-- Client UUID -->
+    <div>
+      <p class="text-xs text-slate-400 mb-1">Client UUID</p>
+      <p class="font-mono text-sm text-white">{{ sub.xui_client_uuid }}</p>
+    </div>
+
+    <!-- Subscription URL -->
+    <div>
+      <p class="text-xs text-slate-400 mb-1">Subscription URL</p>
+      {% if sub.subscription_url %}
+        <div class="bg-slate-900 rounded-lg p-3 flex items-center gap-2">
+          <input type="text" readonly value="{{ sub.subscription_url }}"
+            class="flex-1 bg-transparent text-indigo-300 text-xs font-mono outline-none"
+            id="detail-sub-url">
+          <button onclick="copyText('detail-sub-url', this)"
+            class="text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 transition">
+            Copy
+          </button>
+        </div>
+        <!-- QR code -->
+        <div class="mt-3 flex justify-center">
+          <div id="qr-container" class="bg-white p-2 rounded-lg inline-block"></div>
+        </div>
+      {% else %}
+        <p class="text-slate-500 text-sm italic">No subscription URL assigned. Contact support.</p>
+      {% endif %}
+    </div>
+
+    <!-- Usage -->
+    <div>
+      <p class="text-xs text-slate-400 mb-2">Data Usage</p>
+      <div class="flex justify-between text-sm text-slate-300 mb-1">
+        <span>Used: <strong class="text-white">{{ sub.used_gb }} GB</strong></span>
+        <span>Total: <strong class="text-white">{{ sub.total_allocated_gb }} GB</strong></span>
+      </div>
+      {% if sub.total_allocated_gb > 0 %}
+        <div class="w-full bg-slate-700 rounded-full h-3">
+          <div class="h-3 rounded-full {% if usage_pct >= 90 %}bg-red-500{% elif usage_pct >= 70 %}bg-yellow-500{% else %}bg-indigo-500{% endif %}"
+            style="width: {{ usage_pct }}%"></div>
+        </div>
+        <p class="text-xs text-slate-400 mt-1 text-right">{{ usage_pct }}% used</p>
+      {% endif %}
+    </div>
+
+    <!-- Expiry -->
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <p class="text-xs text-slate-400 mb-1">Expires</p>
+        <p class="text-white text-sm">{{ sub.expires_at|date:"Y-m-d" }}</p>
       </div>
       <div>
-        <p class="text-3xl font-bold text-white" data-expires="{{ sub.expires_at|date:'c' }}">{{ remaining_days }}d</p>
-        <p class="text-xs text-slate-400">Expires {{ sub.expires_at|date:'M d, Y H:i' }}</p>
+        <p class="text-xs text-slate-400 mb-1">Days Remaining</p>
+        <p class="text-sm {% if remaining_days <= 3 %}text-red-400{% elif remaining_days <= 10 %}text-yellow-400{% else %}text-white{% endif %}">
+          {{ remaining_days }} day{{ remaining_days|pluralize }}
+        </p>
       </div>
     </div>
+
+    <!-- Action buttons -->
+    {% if sub.is_active %}
+    <div class="flex gap-3 pt-2 border-t border-slate-700">
+      <a href="{% url 'frontend:subscriptions' %}#topup-{{ sub.id }}"
+        onclick="history.back(); return false;"
+        class="flex-1 text-center text-sm py-2 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-white transition">
+        + Add Traffic
+      </a>
+      <a href="{% url 'frontend:subscriptions' %}#topup-{{ sub.id }}"
+        onclick="history.back(); return false;"
+        class="flex-1 text-center text-sm py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white transition">
+        ↺ Renew Days
+      </a>
+    </div>
+    {% endif %}
   </div>
-
-  <!-- Config Card -->
-  <div class="card space-y-4">
-    <h2 class="font-semibold text-slate-300 text-sm uppercase tracking-wider">Connection Config</h2>
-
-    <div>
-      <label class="text-xs text-slate-400 uppercase mb-1 block">Client UUID</label>
-      <div class="flex items-center gap-2 bg-slate-900 rounded-lg px-3 py-2">
-        <span class="font-mono text-sm text-slate-200 flex-1 break-all">{{ sub.xui_client_uuid }}</span>
-        <button onclick="copyToClipboard('{{ sub.xui_client_uuid }}', this)" class="text-slate-400 hover:text-indigo-400 shrink-0">
-          <i class="fa-regular fa-copy"></i>
-        </button>
-      </div>
-    </div>
-
-    <div>
-      <label class="text-xs text-slate-400 uppercase mb-1 block">Subscription URL</label>
-      <div class="flex items-center gap-2 bg-slate-900 rounded-lg px-3 py-2">
-        <span class="font-mono text-xs text-slate-300 flex-1 break-all">{{ sub.subscription_url }}</span>
-        <button onclick="copyToClipboard('{{ sub.subscription_url }}', this)" class="text-slate-400 hover:text-indigo-400 shrink-0">
-          <i class="fa-regular fa-copy"></i>
-        </button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Mappings -->
-  {% if sub.mappings.all %}
-  <div class="card">
-    <h2 class="font-semibold text-slate-300 text-sm uppercase tracking-wider mb-3">Protocol Mappings</h2>
-    <div class="space-y-2">
-      {% for m in sub.mappings.all %}
-      <div class="flex items-center justify-between bg-slate-900/50 rounded-lg px-4 py-2 text-sm">
-        <span class="text-indigo-400 font-semibold">{{ m.inbound.protocol }}</span>
-        <span class="text-slate-400">{{ m.inbound.server.name }}</span>
-        <span class="font-mono text-xs text-slate-400">{{ m.xui_client_email }}</span>
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
 </div>
+
+{% if sub.subscription_url %}
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script>
+  new QRCode(document.getElementById('qr-container'), {
+    text: "{{ sub.subscription_url|escapejs }}",
+    width: 180, height: 180,
+    colorDark: '#000000', colorLight: '#ffffff',
+    correctLevel: QRCode.CorrectLevel.M
+  });
+  function copyText(inputId, btn) {
+    navigator.clipboard.writeText(document.getElementById(inputId).value).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => btn.textContent = 'Copy', 2000);
+    });
+  }
+</script>
+{% endif %}
 {% endblock %}

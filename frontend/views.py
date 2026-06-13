@@ -1,6 +1,6 @@
 import json
 import logging
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timezone as dt_timezone, timedelta
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
@@ -90,6 +90,24 @@ def _get_or_create_user_for_email(email):
         user.set_password(email)
         user.save(update_fields=['password'])
     return user, created
+
+
+def _get_pricing_for_user(user):
+    """Return (price_per_gb, price_per_day) Decimals for a user."""
+    pricing_target = (
+        user.parent_manager
+        if (user.role == CustomUser.Role.END_USER and user.parent_manager)
+        else user
+    )
+    tier = (
+        PricingTier.objects.filter(specific_user=pricing_target).first()
+        or PricingTier.objects.filter(
+            target_role=pricing_target.role, specific_user__isnull=True
+        ).first()
+    )
+    if tier:
+        return tier.price_per_gb, tier.price_per_day
+    return Decimal('0'), Decimal('0')
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +225,13 @@ def subscriptions(request):
     user = request.user
     active = ProxySubscription.objects.filter(user=user, is_active=True).order_by('-created_at')
     expired = ProxySubscription.objects.filter(user=user, is_active=False).order_by('-created_at')
-    return render(request, 'frontend/subscriptions.html', {'active_subs': active, 'expired_subs': expired})
+    price_per_gb, price_per_day = _get_pricing_for_user(user)
+    return render(request, 'frontend/subscriptions.html', {
+        'active_subs': active,
+        'expired_subs': expired,
+        'price_per_gb': price_per_gb,
+        'price_per_day': price_per_day,
+    })
 
 
 @login_required
@@ -221,6 +245,86 @@ def subscription_detail(request, sub_id):
     return render(request, 'frontend/subscription_detail.html', {
         'sub': sub, 'usage_pct': usage_pct, 'remaining_days': remaining_days,
     })
+
+
+@login_required
+def subscription_topup(request, sub_id):
+    """Allow a user to add GB or days to an existing subscription by spending wallet balance."""
+    if request.method != 'POST':
+        return redirect('frontend:subscriptions')
+
+    sub = get_object_or_404(ProxySubscription, id=sub_id, user=request.user)
+    action = request.POST.get('action', '')
+    price_per_gb, price_per_day = _get_pricing_for_user(request.user)
+
+    with db_transaction.atomic():
+        user = CustomUser.objects.select_for_update().get(pk=request.user.pk)
+
+        if action == 'traffic':
+            try:
+                extra_gb = int(request.POST.get('extra_gb', 0))
+            except ValueError:
+                extra_gb = 0
+            if extra_gb <= 0:
+                messages.error(request, 'Enter a valid number of GB.')
+                return redirect('frontend:subscriptions')
+            if price_per_gb <= 0:
+                messages.error(request, 'No pricing configured. Contact support.')
+                return redirect('frontend:subscriptions')
+            cost = Decimal(str(extra_gb)) * price_per_gb
+            if user.wallet_balance < cost:
+                messages.error(request, f'Insufficient balance. Need {cost} IRR, have {user.wallet_balance} IRR.')
+                return redirect('frontend:subscriptions')
+            user.wallet_balance -= cost
+            user.save(update_fields=['wallet_balance'])
+            sub.total_allocated_gb += extra_gb
+            sub.is_active = True
+            sub.save(update_fields=['total_allocated_gb', 'is_active', 'updated_at'])
+            Transaction.objects.create(
+                user=user,
+                type=Transaction.TypeChoices.PLAN_PURCHASE,
+                amount=cost,
+                payment_ref_code=f'TOPUP-{sub.id}-{int(timezone.now().timestamp())}',
+                status=Transaction.StatusChoices.APPROVED,
+                screenshot='',
+            )
+            messages.success(request, f'{extra_gb} GB added to your subscription. Cost: {cost} IRR.')
+
+        elif action == 'renew':
+            try:
+                extra_days = int(request.POST.get('extra_days', 0))
+            except ValueError:
+                extra_days = 0
+            if extra_days <= 0:
+                messages.error(request, 'Enter a valid number of days.')
+                return redirect('frontend:subscriptions')
+            if price_per_day <= 0:
+                messages.error(request, 'No pricing configured. Contact support.')
+                return redirect('frontend:subscriptions')
+            cost = Decimal(str(extra_days)) * price_per_day
+            if user.wallet_balance < cost:
+                messages.error(request, f'Insufficient balance. Need {cost} IRR, have {user.wallet_balance} IRR.')
+                return redirect('frontend:subscriptions')
+            user.wallet_balance -= cost
+            user.save(update_fields=['wallet_balance'])
+            base = max(sub.expires_at, timezone.now())
+            sub.expires_at = base + timedelta(days=extra_days)
+            sub.is_active = True
+            sub.save(update_fields=['expires_at', 'is_active', 'updated_at'])
+            Transaction.objects.create(
+                user=user,
+                type=Transaction.TypeChoices.PLAN_PURCHASE,
+                amount=cost,
+                payment_ref_code=f'RENEW-{sub.id}-{int(timezone.now().timestamp())}',
+                status=Transaction.StatusChoices.APPROVED,
+                screenshot='',
+            )
+            messages.success(request, f'{extra_days} days added to your subscription. Cost: {cost} IRR.')
+
+        else:
+            messages.error(request, 'Invalid action.')
+
+    return redirect('frontend:subscriptions')
 
 
 @login_required
@@ -260,7 +364,7 @@ def change_password(request):
         else:
             request.user.set_password(new1)
             request.user.save()
-            update_session_auth_hash(request, request.user)  # keep user logged in
+            update_session_auth_hash(request, request.user)
             messages.success(request, 'Password changed successfully.')
             return redirect(_role_redirect(request.user))
     return render(request, 'frontend/change_password.html')
@@ -381,7 +485,6 @@ def _sync_server_inbounds_and_clients(server):
         errors.append(str(e))
         return inbound_count, client_count, user_count, errors
 
-    # Fallback placeholder — only used when a client has NO email
     import_user, _ = CustomUser.objects.get_or_create(
         username='__imported__',
         defaults={'role': CustomUser.Role.END_USER, 'is_active': False, 'email': 'imported@system.local'}
@@ -421,11 +524,9 @@ def _sync_server_inbounds_and_clients(server):
         cli = data['cli']
         email = cli.get('email', '').strip().lower()
 
-        # Auto-create (or fetch) a real user account from the client email
         owner, created = _get_or_create_user_for_email(email)
         if created:
             user_count += 1
-        # Fall back to __imported__ placeholder if no email
         if owner is None:
             owner = import_user
 
@@ -489,7 +590,6 @@ def master_users(request):
 
 @require_role('MASTER_ADMIN')
 def master_create_user(request):
-    """Manually create an end user with username=email, password=email."""
     if request.method != 'POST':
         return redirect('frontend:master_users')
 
