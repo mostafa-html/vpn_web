@@ -58,19 +58,12 @@ class XuiAPIClient:
     ) -> Dict[str, Any]:
         url = self._url(endpoint)
 
-        # ================================================================
-        # DEBUG LOGGING — remove before production
-        # Shows full URL, request body, response status and body.
-        # Set Django log level to DEBUG for billing_engine.xui_client,
-        # or just tail the log file and grep for XUI_.
-        # ================================================================
         logger.warning("[XUI_REQ]  %s  %s", method, url)
         if json_data is not None:
             try:
                 logger.warning("[XUI_BODY] %s", json.dumps(json_data, ensure_ascii=False, default=str))
             except Exception:
                 logger.warning("[XUI_BODY] <could not serialize body>")
-        # ================================================================
 
         for attempt in range(1, self.max_retries + 1):
             sleep_duration = self.backoff_factor ** attempt
@@ -84,15 +77,11 @@ class XuiAPIClient:
                     verify=self.verify_ssl,
                 )
 
-                # ================================================================
-                # DEBUG — log every response regardless of status
-                # ================================================================
                 logger.warning(
                     "[XUI_RESP] status=%s  body=%s",
                     response.status_code,
                     response.text[:1000],
                 )
-                # ================================================================
 
                 if response.status_code == 401:
                     raise XuiAPIException(
@@ -149,12 +138,28 @@ class XuiAPIClient:
     # ------------------------------------------------------------------
 
     def get_client_by_email(self, email: str) -> Dict[str, Any]:
-        data = self._request("GET", f"panel/api/clients/get/{email}")
-        obj = data.get("obj") or {}
-        client = obj.get("client") or obj
-        if not client:
+        """
+        Fetch live client fields using the correct v3 endpoint.
+        Returns the raw client dict from the panel (id, email, totalGB,
+        expiryTime, enable, limitIp, …).
+        """
+        # FIX: correct v3 endpoint is getClientTraffics/<email>, not clients/get/<email>
+        data = self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
+        obj = data.get("obj")
+        if not obj:
             raise XuiAPIException(f"Client '{email}' not found on server '{self.server.name}'.")
-        return client
+        # getClientTraffics returns traffic stats, not the full client config.
+        # We need the full config (totalGB, expiryTime, enable) — scan inbounds for it.
+        inbounds_data = self.get_inbounds()
+        for inbound in inbounds_data.get("obj", []):
+            try:
+                settings_obj = json.loads(inbound.get("settings", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                settings_obj = {}
+            for client in settings_obj.get("clients", []):
+                if client.get("email", "").strip().lower() == email.strip().lower():
+                    return client
+        raise XuiAPIException(f"Client config for '{email}' not found in any inbound on server '{self.server.name}'.")
 
     def add_client(
         self,
@@ -185,24 +190,72 @@ class XuiAPIClient:
     def update_client(
         self,
         email: str,
+        client_uuid: str,
         total_gb: int = 0,
         expiry_time_ms: int = 0,
         enable: bool = True,
         inbound_ids: Optional[list] = None,
     ) -> Dict[str, Any]:
-        # Fetch current record so we preserve all existing fields.
+        """
+        FIX: 3x-ui v3 update endpoint requires the client UUID in the URL,
+        NOT the email.  Endpoint: POST /panel/api/clients/update/<uuid>
+        Body must include inboundIds so the panel knows which inbounds to
+        apply the change to.
+
+        We fetch the current client config first so we only overwrite the
+        fields we explicitly change and preserve everything else (limitIp,
+        subId, tgId, etc.).
+        """
+        # Fetch current record to preserve all unchanged fields.
         current = self.get_client_by_email(email)
         merged = dict(current)
+        merged["id"] = client_uuid          # ensure UUID is present in body
+        merged["email"] = email
         merged["totalGB"] = int(total_gb)
         merged["expiryTime"] = int(expiry_time_ms)
         merged["enable"] = bool(enable)
 
-        endpoint = f"panel/api/clients/update/{email}"
-        if inbound_ids:
-            ids_str = ",".join(str(i) for i in inbound_ids)
-            endpoint = f"{endpoint}?inboundIds={ids_str}"
+        # FIX: URL key is the UUID, not the email.
+        payload = {
+            "inboundIds": [int(i) for i in inbound_ids] if inbound_ids else [],
+            "client": merged,
+        }
+        return self._request("POST", f"panel/api/clients/update/{client_uuid}", json_data=payload)
 
-        return self._request("POST", endpoint, json_data=merged)
+    def disable_client(
+        self,
+        inbound_id: int,
+        client_uuid: str,
+    ) -> Dict[str, Any]:
+        """
+        Disable (block) a client by setting enable=False via the update endpoint.
+        Used by _deprovision_subscription() in tasks.py.
+        We fetch the current client config from the inbound to get the email,
+        then call update_client with enable=False.
+        """
+        inbounds_data = self.get_inbounds()
+        for inbound in inbounds_data.get("obj", []):
+            if int(inbound.get("id", -1)) != int(inbound_id):
+                continue
+            try:
+                settings_obj = json.loads(inbound.get("settings", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                settings_obj = {}
+            for client in settings_obj.get("clients", []):
+                if client.get("id", "") == client_uuid:
+                    email = client.get("email", "")
+                    return self.update_client(
+                        email=email,
+                        client_uuid=client_uuid,
+                        total_gb=int(client.get("totalGB", 0)),
+                        expiry_time_ms=int(client.get("expiryTime", 0)),
+                        enable=False,
+                        inbound_ids=[inbound_id],
+                    )
+        raise XuiAPIException(
+            f"Client UUID '{client_uuid}' not found in inbound {inbound_id} "
+            f"on server '{self.server.name}'."
+        )
 
     def delete_client(self, email: str) -> Dict[str, Any]:
         return self._request("POST", f"panel/api/clients/del/{email}")
