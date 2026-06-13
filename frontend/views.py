@@ -71,10 +71,6 @@ def _role_redirect(user):
 
 
 def _get_or_create_user_for_email(email):
-    """Return (user, created) for a 3x-ui client email.
-    username = email (lowercased), default password = email.
-    Skips creation if email is blank.
-    """
     if not email:
         return None, False
     email = email.strip().lower()
@@ -93,7 +89,6 @@ def _get_or_create_user_for_email(email):
 
 
 def _get_pricing_for_user(user):
-    """Return (price_per_gb, price_per_day) Decimals for a user."""
     pricing_target = (
         user.parent_manager
         if (user.role == CustomUser.Role.END_USER and user.parent_manager)
@@ -108,6 +103,61 @@ def _get_pricing_for_user(user):
     if tier:
         return tier.price_per_gb, tier.price_per_day
     return Decimal('0'), Decimal('0')
+
+
+def _build_subscription_url(server, client_uuid):
+    """Build the 3x-ui subscription URL for a client UUID.
+    Format: http(s)://<host>:<port><base_path>sub/<uuid>
+    """
+    protocol = 'https' if server.use_ssl else 'http'
+    host = server.get_host()
+    base_path = server.get_base_path()  # always has trailing slash
+    return f"{protocol}://{host}:{server.api_port}{base_path}sub/{client_uuid}"
+
+
+def _get_live_client_data_for_uuid(server, target_uuid):
+    """Fetch live data for a single client UUID from 3x-ui.
+    Returns dict with keys: used_bytes, total_bytes, expiry_ms, enable, email
+    or None on error.
+    """
+    try:
+        result = XuiAPIClient(server).get_inbounds()
+    except XuiAPIException as e:
+        logger.error('XUI API error: %s', e)
+        return None
+
+    aggregated = {
+        'used_bytes': 0,
+        'total_bytes': 0,
+        'expiry_ms': 0,
+        'enable': True,
+        'email': '',
+    }
+    found = False
+
+    for inbound in result.get('obj', []):
+        client_stats = inbound.get('clientStats') or []
+        stats_by_email = {cs.get('email', ''): cs for cs in client_stats}
+        settings_obj = _parse_field(inbound.get('settings', {}))
+        for cli in settings_obj.get('clients', []):
+            if cli.get('id', '') != target_uuid:
+                continue
+            found = True
+            email = cli.get('email', '')
+            stats = stats_by_email.get(email, {})
+            up = int(stats.get('up', 0))
+            down = int(stats.get('down', 0))
+            aggregated['used_bytes'] += up + down
+            aggregated['email'] = email
+            aggregated['enable'] = cli.get('enable', True)
+            total_bytes = int(cli.get('totalGB', 0))
+            expiry_ms = int(cli.get('expiryTime', 0))
+            if total_bytes > aggregated['total_bytes']:
+                aggregated['total_bytes'] = total_bytes
+            if expiry_ms and (not aggregated['expiry_ms'] or expiry_ms < aggregated['expiry_ms']):
+                aggregated['expiry_ms'] = expiry_ms
+
+    return aggregated if found else None
 
 
 # ---------------------------------------------------------------------------
@@ -220,15 +270,90 @@ def custom_plan(request):
     return render(request, 'frontend/custom_plan.html', {'form': form})
 
 
+def _enrich_sub_with_live_data(sub):
+    """
+    Attach live 3x-ui data to a ProxySubscription object as extra attributes.
+    Also backfills DB fields (subscription_url, total_allocated_gb, expires_at)
+    if they are still at their import defaults.
+    Returns the same sub object (mutated with .live_* attributes).
+    """
+    # Find which server this sub belongs to via its mapping
+    mapping = SubscriptionConfigMapping.objects.select_related(
+        'inbound__server'
+    ).filter(subscription=sub).first()
+
+    sub.live_used_gb = float(sub.used_gb)
+    sub.live_total_gb = sub.total_allocated_gb
+    sub.live_expiry_str = sub.expires_at.strftime('%Y-%m-%d') if sub.expires_at else None
+    now = timezone.now()
+    sub.live_remaining_days = max((sub.expires_at - now).days, 0) if sub.expires_at and sub.expires_at > now else 0
+    sub.live_error = None
+
+    if not mapping:
+        return sub
+
+    server = mapping.inbound.server
+
+    # Build subscription URL if missing
+    if not sub.subscription_url:
+        url = _build_subscription_url(server, sub.xui_client_uuid)
+        sub.subscription_url = url
+        ProxySubscription.objects.filter(pk=sub.pk).update(subscription_url=url)
+
+    # Fetch live stats
+    live = _get_live_client_data_for_uuid(server, sub.xui_client_uuid)
+    if live:
+        used_gb = live['used_bytes'] / BYTES_PER_GB
+        total_gb = live['total_bytes'] / BYTES_PER_GB if live['total_bytes'] else 0
+        sub.live_used_gb = round(used_gb, 3)
+        sub.live_total_gb = round(total_gb, 2)
+
+        # Backfill DB if still zero
+        update_fields = []
+        if sub.total_allocated_gb == 0 and total_gb > 0:
+            sub.total_allocated_gb = int(total_gb) or 1
+            update_fields.append('total_allocated_gb')
+
+        if live['expiry_ms']:
+            expiry_dt = datetime.fromtimestamp(live['expiry_ms'] / 1000, tz=dt_timezone.utc)
+            expiry_dt_aware = timezone.make_aware(
+                expiry_dt.replace(tzinfo=None), timezone.get_current_timezone()
+            ) if timezone.is_naive(expiry_dt) else expiry_dt
+            sub.live_expiry_str = expiry_dt.strftime('%Y-%m-%d')
+            remaining = (expiry_dt - datetime.now(tz=dt_timezone.utc)).days
+            sub.live_remaining_days = max(remaining, 0)
+            # Backfill if expires_at is today or in the past (still at import default)
+            if sub.expires_at <= timezone.now() + timedelta(minutes=1):
+                sub.expires_at = expiry_dt_aware
+                update_fields.append('expires_at')
+        else:
+            sub.live_expiry_str = 'No expiry'
+            sub.live_remaining_days = 999
+
+        if update_fields:
+            try:
+                ProxySubscription.objects.filter(pk=sub.pk).update(
+                    **{f: getattr(sub, f) for f in update_fields}
+                )
+            except Exception as e:
+                logger.warning('Could not backfill sub %s: %s', sub.pk, e)
+
+    return sub
+
+
 @login_required
 def subscriptions(request):
     user = request.user
-    active = ProxySubscription.objects.filter(user=user, is_active=True).order_by('-created_at')
-    expired = ProxySubscription.objects.filter(user=user, is_active=False).order_by('-created_at')
+    active_qs = list(ProxySubscription.objects.filter(user=user, is_active=True).order_by('-created_at'))
+    expired_qs = list(ProxySubscription.objects.filter(user=user, is_active=False).order_by('-created_at'))
+
+    for sub in active_qs + expired_qs:
+        _enrich_sub_with_live_data(sub)
+
     price_per_gb, price_per_day = _get_pricing_for_user(user)
     return render(request, 'frontend/subscriptions.html', {
-        'active_subs': active,
-        'expired_subs': expired,
+        'active_subs': active_qs,
+        'expired_subs': expired_qs,
         'price_per_gb': price_per_gb,
         'price_per_day': price_per_day,
     })
@@ -237,19 +362,24 @@ def subscriptions(request):
 @login_required
 def subscription_detail(request, sub_id):
     sub = get_object_or_404(ProxySubscription, id=sub_id, user=request.user)
+    _enrich_sub_with_live_data(sub)
+
     usage_pct = 0
-    if sub.total_allocated_gb > 0:
-        usage_pct = min(int((float(sub.used_gb) / sub.total_allocated_gb) * 100), 100)
-    now = timezone.now()
-    remaining_days = max((sub.expires_at - now).days, 0) if sub.expires_at > now else 0
+    if sub.live_total_gb > 0:
+        usage_pct = min(int(sub.live_used_gb / sub.live_total_gb * 100), 100)
+
     return render(request, 'frontend/subscription_detail.html', {
-        'sub': sub, 'usage_pct': usage_pct, 'remaining_days': remaining_days,
+        'sub': sub,
+        'usage_pct': usage_pct,
+        'remaining_days': sub.live_remaining_days,
+        'expiry_str': sub.live_expiry_str,
+        'used_gb': sub.live_used_gb,
+        'total_gb': sub.live_total_gb,
     })
 
 
 @login_required
 def subscription_topup(request, sub_id):
-    """Allow a user to add GB or days to an existing subscription by spending wallet balance."""
     if request.method != 'POST':
         return redirect('frontend:subscriptions')
 
@@ -288,7 +418,7 @@ def subscription_topup(request, sub_id):
                 status=Transaction.StatusChoices.APPROVED,
                 screenshot='',
             )
-            messages.success(request, f'{extra_gb} GB added to your subscription. Cost: {cost} IRR.')
+            messages.success(request, f'{extra_gb} GB added. Cost: {cost} IRR.')
 
         elif action == 'renew':
             try:
@@ -319,7 +449,7 @@ def subscription_topup(request, sub_id):
                 status=Transaction.StatusChoices.APPROVED,
                 screenshot='',
             )
-            messages.success(request, f'{extra_days} days added to your subscription. Cost: {cost} IRR.')
+            messages.success(request, f'{extra_days} days added. Cost: {cost} IRR.')
 
         else:
             messages.error(request, 'Invalid action.')
@@ -470,10 +600,6 @@ def _build_live_client_map(server):
 
 
 def _sync_server_inbounds_and_clients(server):
-    """Sync inbounds from 3x-ui, import unknown clients, and auto-create
-    a CustomUser (username=email, password=email) for every client that
-    has an email address set in 3x-ui.
-    """
     inbound_count = 0
     client_count = 0
     user_count = 0
@@ -507,22 +633,46 @@ def _sync_server_inbounds_and_clients(server):
         inbound_map[ib['id']] = (inbound_obj, ib)
         inbound_count += 1
 
+    # Build per-uuid aggregated data (same as _build_live_client_map but also
+    # carries per-client totalGB and expiryTime from the settings payload)
     uuid_to_data = {}
     for xui_id, (inbound_obj, ib) in inbound_map.items():
         settings_obj = _parse_field(ib.get('settings', {}))
+        client_stats = ib.get('clientStats') or []
+        stats_by_email = {cs.get('email', ''): cs for cs in client_stats}
+
         for cli in settings_obj.get('clients', []):
             uuid = cli.get('id', '')
             if not uuid:
                 continue
+            email = cli.get('email', '').strip().lower()
+            stats = stats_by_email.get(email, {})
+            up = int(stats.get('up', 0))
+            down = int(stats.get('down', 0))
+            total_bytes = int(cli.get('totalGB', 0))
+            expiry_ms = int(cli.get('expiryTime', 0))
+
             if uuid not in uuid_to_data:
-                uuid_to_data[uuid] = {'cli': cli, 'inbounds': []}
+                uuid_to_data[uuid] = {
+                    'cli': cli,
+                    'email': email,
+                    'inbounds': [],
+                    'used_bytes': 0,
+                    'total_bytes': total_bytes,
+                    'expiry_ms': expiry_ms,
+                    'enable': cli.get('enable', True),
+                }
             uuid_to_data[uuid]['inbounds'].append(inbound_obj)
+            uuid_to_data[uuid]['used_bytes'] += up + down
+            if total_bytes > uuid_to_data[uuid]['total_bytes']:
+                uuid_to_data[uuid]['total_bytes'] = total_bytes
+            if expiry_ms and (not uuid_to_data[uuid]['expiry_ms'] or expiry_ms < uuid_to_data[uuid]['expiry_ms']):
+                uuid_to_data[uuid]['expiry_ms'] = expiry_ms
 
     for uuid, data in uuid_to_data.items():
         if uuid in managed_uuids:
             continue
-        cli = data['cli']
-        email = cli.get('email', '').strip().lower()
+        email = data['email']
 
         owner, created = _get_or_create_user_for_email(email)
         if created:
@@ -530,14 +680,25 @@ def _sync_server_inbounds_and_clients(server):
         if owner is None:
             owner = import_user
 
+        # Derive real values
+        total_gb = int(data['total_bytes'] / BYTES_PER_GB) if data['total_bytes'] else 0
+        used_gb_val = round(data['used_bytes'] / BYTES_PER_GB, 3)
+        if data['expiry_ms']:
+            expires_at = datetime.fromtimestamp(data['expiry_ms'] / 1000, tz=dt_timezone.utc)
+        else:
+            expires_at = timezone.now() + timedelta(days=36500)  # no expiry = 100 yrs
+
+        sub_url = _build_subscription_url(server, uuid)
+
         try:
             sub = ProxySubscription.objects.create(
                 user=owner,
                 xui_client_uuid=uuid,
-                subscription_url='',
-                total_allocated_gb=0,
-                expires_at=timezone.now(),
-                is_active=cli.get('enable', True),
+                subscription_url=sub_url,
+                total_allocated_gb=max(total_gb, 0),
+                used_gb=used_gb_val,
+                expires_at=expires_at,
+                is_active=data['enable'],
             )
             for inbound_obj in data['inbounds']:
                 SubscriptionConfigMapping.objects.get_or_create(
@@ -617,17 +778,10 @@ def master_create_user(request):
             return redirect('frontend:master_users')
 
     new_user = CustomUser.objects.create_user(
-        username=email,
-        email=email,
-        password=email,
-        role=role_value,
-        parent_manager=parent,
+        username=email, email=email, password=email,
+        role=role_value, parent_manager=parent,
     )
-    messages.success(
-        request,
-        f'User "{new_user.username}" created. '
-        f'They can log in with their email as both username and password.'
-    )
+    messages.success(request, f'User "{new_user.username}" created. Default password = email.')
     return redirect('frontend:master_users')
 
 
