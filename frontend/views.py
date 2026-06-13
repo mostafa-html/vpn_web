@@ -161,7 +161,7 @@ def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None)
     """
     Push changes to 3x-ui for every server mapping this subscription has.
 
-    Uses the v3 API: POST /panel/api/clients/update/:email
+    Uses the v3 API: POST /panel/api/clients/update/<uuid>
     XuiAPIClient.update_client() fetches the current client record first,
     then only overwrites the fields we pass, preserving everything else.
 
@@ -187,11 +187,11 @@ def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None)
             logger.warning('_xui_update_sub: no client email for sub %s on server %s', sub.pk, server.name)
             continue
         try:
-            # Build kwargs with only the fields that were explicitly provided.
-            # update_client() will fetch current values and merge them, so
-            # we must still pass defaults for the fields we DO want to change.
             kwargs = {
                 'email': client_email,
+                # FIX: client_uuid is now required by update_client() so the
+                # correct v3 URL /panel/api/clients/update/<uuid> is used.
+                'client_uuid': sub.xui_client_uuid,
             }
             if new_total_gb is not None:
                 kwargs['total_gb'] = int(new_total_gb)
@@ -200,9 +200,6 @@ def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None)
             if new_enable is not None:
                 kwargs['enable'] = bool(new_enable)
 
-            # update_client fetches current state internally, so any field
-            # not in kwargs will be read from the panel and preserved.
-            # We need to pass ALL three so the merge is unambiguous.
             # Resolve any missing fields from the current panel state first.
             if new_total_gb is None or new_expiry_ms is None or new_enable is None:
                 try:
