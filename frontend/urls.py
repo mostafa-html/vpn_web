@@ -18,6 +18,7 @@ urlpatterns = [
     path('subscriptions/<uuid:sub_id>/', views.subscription_detail, name='subscription_detail'),
     path('wallet/', views.wallet, name='wallet'),
     path('transactions/', views.transactions, name='transactions'),
+    path('change-password/', views.change_password, name='change_password'),
 
     # Sub admin
     path('subadmin/', views.subadmin_dashboard, name='subadmin_dashboard'),
