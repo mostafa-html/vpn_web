@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.db import transaction as db_transaction
@@ -68,6 +68,28 @@ def _role_redirect(user):
     elif user.role == CustomUser.Role.SUB_ADMIN:
         return 'frontend:subadmin_dashboard'
     return 'frontend:dashboard'
+
+
+def _get_or_create_user_for_email(email):
+    """Return (user, created) for a 3x-ui client email.
+    username = email (lowercased), default password = email.
+    Skips creation if email is blank.
+    """
+    if not email:
+        return None, False
+    email = email.strip().lower()
+    user, created = CustomUser.objects.get_or_create(
+        username=email,
+        defaults={
+            'email': email,
+            'role': CustomUser.Role.END_USER,
+            'is_active': True,
+        }
+    )
+    if created:
+        user.set_password(email)
+        user.save(update_fields=['password'])
+    return user, created
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +245,27 @@ def transactions(request):
     return render(request, 'frontend/transactions.html', {'txns': txns})
 
 
+@login_required
+def change_password(request):
+    if request.method == 'POST':
+        current = request.POST.get('current_password', '')
+        new1 = request.POST.get('new_password1', '')
+        new2 = request.POST.get('new_password2', '')
+        if not request.user.check_password(current):
+            messages.error(request, 'Current password is incorrect.')
+        elif len(new1) < 6:
+            messages.error(request, 'New password must be at least 6 characters.')
+        elif new1 != new2:
+            messages.error(request, 'New passwords do not match.')
+        else:
+            request.user.set_password(new1)
+            request.user.save()
+            update_session_auth_hash(request, request.user)  # keep user logged in
+            messages.success(request, 'Password changed successfully.')
+            return redirect(_role_redirect(request.user))
+    return render(request, 'frontend/change_password.html')
+
+
 # ---------------------------------------------------------------------------
 # SUB ADMIN
 # ---------------------------------------------------------------------------
@@ -323,16 +366,22 @@ def _build_live_client_map(server):
 
 
 def _sync_server_inbounds_and_clients(server):
+    """Sync inbounds from 3x-ui, import unknown clients, and auto-create
+    a CustomUser (username=email, password=email) for every client that
+    has an email address set in 3x-ui.
+    """
     inbound_count = 0
     client_count = 0
+    user_count = 0
     errors = []
 
     try:
         api_result = XuiAPIClient(server).get_inbounds()
     except XuiAPIException as e:
         errors.append(str(e))
-        return inbound_count, client_count, errors
+        return inbound_count, client_count, user_count, errors
 
+    # Fallback placeholder — only used when a client has NO email
     import_user, _ = CustomUser.objects.get_or_create(
         username='__imported__',
         defaults={'role': CustomUser.Role.END_USER, 'is_active': False, 'email': 'imported@system.local'}
@@ -346,7 +395,11 @@ def _sync_server_inbounds_and_clients(server):
         inbound_obj, _ = XuiInbound.objects.get_or_create(
             server=server,
             xui_inbound_id=ib['id'],
-            defaults={'protocol': ib.get('protocol', 'VLESS').upper(), 'stream_settings': stream, 'is_available_for_purchase': True}
+            defaults={
+                'protocol': ib.get('protocol', 'VLESS').upper(),
+                'stream_settings': stream,
+                'is_available_for_purchase': True,
+            }
         )
         inbound_map[ib['id']] = (inbound_obj, ib)
         inbound_count += 1
@@ -366,10 +419,19 @@ def _sync_server_inbounds_and_clients(server):
         if uuid in managed_uuids:
             continue
         cli = data['cli']
-        email = cli.get('email', '')
+        email = cli.get('email', '').strip().lower()
+
+        # Auto-create (or fetch) a real user account from the client email
+        owner, created = _get_or_create_user_for_email(email)
+        if created:
+            user_count += 1
+        # Fall back to __imported__ placeholder if no email
+        if owner is None:
+            owner = import_user
+
         try:
             sub = ProxySubscription.objects.create(
-                user=import_user,
+                user=owner,
                 xui_client_uuid=uuid,
                 subscription_url='',
                 total_allocated_gb=0,
@@ -387,7 +449,7 @@ def _sync_server_inbounds_and_clients(server):
             errors.append(f'Client {uuid[:8]}: {e}')
             logger.error('Import client error: %s', e)
 
-    return inbound_count, client_count, errors
+    return inbound_count, client_count, user_count, errors
 
 
 # ---------------------------------------------------------------------------
@@ -427,9 +489,7 @@ def master_users(request):
 
 @require_role('MASTER_ADMIN')
 def master_create_user(request):
-    """Create an end user whose username and password both equal their email.
-    This lets existing 3x-ui clients log in immediately without re-registering.
-    """
+    """Manually create an end user with username=email, password=email."""
     if request.method != 'POST':
         return redirect('frontend:master_users')
 
@@ -441,17 +501,14 @@ def master_create_user(request):
         messages.error(request, 'Email is required.')
         return redirect('frontend:master_users')
 
-    # username = email (Django allows email-format usernames up to 150 chars)
     if CustomUser.objects.filter(username=email).exists():
         messages.error(request, f'A user with username "{email}" already exists.')
         return redirect('frontend:master_users')
 
-    # Resolve role
     valid_roles = {r for r, _ in CustomUser.Role.choices}
     if role_value not in valid_roles:
         role_value = CustomUser.Role.END_USER
 
-    # Resolve optional parent manager
     parent = None
     if parent_username:
         parent = CustomUser.objects.filter(username=parent_username).first()
@@ -462,7 +519,7 @@ def master_create_user(request):
     new_user = CustomUser.objects.create_user(
         username=email,
         email=email,
-        password=email,  # password = email, user should change after first login
+        password=email,
         role=role_value,
         parent_manager=parent,
     )
@@ -479,11 +536,17 @@ def master_servers(request):
     form = XuiServerForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
         server = form.save()
-        inbound_count, client_count, errors = _sync_server_inbounds_and_clients(server)
+        inbound_count, client_count, user_count, errors = _sync_server_inbounds_and_clients(server)
         if errors:
             messages.warning(request, f'Server added but sync had errors: {"; ".join(errors[:3])}')
         else:
-            messages.success(request, f'Server "{server.name}" added. Synced {inbound_count} inbound(s), imported {client_count} existing client(s).')
+            messages.success(
+                request,
+                f'Server "{server.name}" added. '
+                f'Synced {inbound_count} inbound(s), '
+                f'imported {client_count} client(s), '
+                f'created {user_count} new user account(s).'
+            )
         return redirect('frontend:master_servers')
     servers = XuiServer.objects.prefetch_related('inbounds').order_by('name')
     return render(request, 'frontend/master_servers.html', {'form': form, 'servers': servers})
