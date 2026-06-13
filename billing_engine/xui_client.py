@@ -28,17 +28,16 @@ class XuiAPIClient:
     inside inbound.settings.clients[].
 
     clientStats fields:
+      id         : INTEGER row ID  — used in the update endpoint URL
+      uuid       : UUID string     — used as 'id' field in the body payload
       total      : traffic limit in BYTES  (0 = unlimited)
       expiryTime : Unix milliseconds       (0 or negative = never/expired)
       enable     : bool
       email      : str
-      uuid       : str   (panel UUID — used as update endpoint key)
 
-    update_client() POST body uses the settings.clients schema:
-      totalGB    : plain GB integer
-      expiryTime : Unix milliseconds
-      id         : UUID string
-      inboundIds : ALL inbound IDs the client belongs to (not just one)
+    update_client() call:
+      URL  : /panel/api/clients/update/<row_id>   (integer)
+      body : { inboundIds: [...], client: { id: <uuid>, totalGB: <int>, ... } }
     """
 
     def __init__(self, server: XuiServer):
@@ -169,13 +168,16 @@ class XuiAPIClient:
     def _normalise_client(cs: Dict[str, Any]) -> Dict[str, Any]:
         """
         Convert a clientStats entry into the shape expected by the update endpoint.
-          uuid  -> id      (panel UUID string)
-          total -> totalGB (bytes -> plain GB)
+
+        cs['id']   = integer row ID  — stored as 'row_id', used in URL
+        cs['uuid'] = UUID string     — stored as 'id',     used in body
+        cs['total']= bytes           — converted to plain GB as 'totalGB'
         """
         total_bytes = int(cs.get("total", 0))
         total_gb = round(total_bytes / BYTES_PER_GB) if total_bytes > 0 else 0
         return {
-            "id": cs.get("uuid", ""),
+            "row_id": int(cs.get("id", 0)),       # integer — for endpoint URL
+            "id": cs.get("uuid", ""),              # UUID string — for body 'id'
             "email": cs.get("email", ""),
             "totalGB": total_gb,
             "expiryTime": int(cs.get("expiryTime", 0)),
@@ -223,14 +225,15 @@ class XuiAPIClient:
     def get_client_by_email(self, email: str) -> Dict[str, Any]:
         """
         Find a client by email scanning inbound.clientStats[].
-        Returns a normalised dict with 'id' (panel UUID) and 'totalGB' (plain GB).
+        Returns a normalised dict with 'id' (UUID), 'row_id' (int), 'totalGB'.
         """
         logger.warning("[XUI_GET_CLIENT] looking up email=%s on server=%s", email, self.server.name)
         try:
             normalised, inbound_ids = self._find_client_and_inbounds(email)
             logger.warning(
-                "[XUI_GET_CLIENT] FOUND email=%s uuid=%s totalGB=%s expiryTime=%s enable=%s inbounds=%s",
+                "[XUI_GET_CLIENT] FOUND email=%s row_id=%s uuid=%s totalGB=%s expiryTime=%s enable=%s inbounds=%s",
                 email,
+                normalised["row_id"],
                 normalised["id"],
                 normalised["totalGB"],
                 normalised["expiryTime"],
@@ -281,10 +284,11 @@ class XuiAPIClient:
         inbound_ids: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         """
-        3x-ui v3: POST /panel/api/clients/update/<panel_uuid>
+        3x-ui v3: POST /panel/api/clients/update/<row_id>
 
-        Always uses the panel UUID from clientStats (not the DB UUID).
-        Always sends ALL inbound IDs the client belongs to.
+        The endpoint URL uses the INTEGER row ID from clientStats['id']
+        (e.g. 417), NOT the UUID string. The UUID goes inside the body
+        as client['id']. All inbound IDs are collected from the panel.
         """
         logger.warning(
             "[XUI_TOPUP_START] server=%s email=%s db_uuid=%s new_total_gb=%s new_expiry_ms=%s enable=%s",
@@ -292,18 +296,16 @@ class XuiAPIClient:
         )
 
         current, panel_inbound_ids = self._find_client_and_inbounds(email)
-        panel_uuid = current["id"]
+        row_id = current["row_id"]      # integer — for the URL
+        panel_uuid = current["id"]      # UUID string — for the body
 
         logger.warning(
-            "[XUI_TOPUP_CURRENT] server=%s email=%s panel_uuid=%s current_totalGB=%s "
-            "current_expiry=%s current_enable=%s panel_inbound_ids=%s",
-            self.server.name, email, panel_uuid,
+            "[XUI_TOPUP_CURRENT] server=%s email=%s row_id=%s panel_uuid=%s "
+            "current_totalGB=%s current_expiry=%s current_enable=%s panel_inbound_ids=%s",
+            self.server.name, email, row_id, panel_uuid,
             current.get("totalGB"), current.get("expiryTime"), current.get("enable"),
             panel_inbound_ids,
         )
-
-        # Always use the full panel inbound list — caller's list may be incomplete
-        effective_inbound_ids = panel_inbound_ids
 
         merged = dict(current)
         merged["id"] = panel_uuid
@@ -311,25 +313,27 @@ class XuiAPIClient:
         merged["totalGB"] = int(total_gb)
         merged["expiryTime"] = int(expiry_time_ms)
         merged["enable"] = bool(enable)
-        for drop in ("inboundId", "up", "down", "lastOnline", "uuid", "total"):
+        # strip fields that don't belong in the update body
+        for drop in ("row_id", "inboundId", "up", "down", "lastOnline", "uuid", "total"):
             merged.pop(drop, None)
 
         payload = {
-            "inboundIds": effective_inbound_ids,
+            "inboundIds": panel_inbound_ids,
             "client": merged,
         }
 
         logger.warning(
-            "[XUI_TOPUP_PAYLOAD] server=%s panel_uuid=%s payload=%s",
-            self.server.name, panel_uuid,
+            "[XUI_TOPUP_PAYLOAD] server=%s row_id=%s panel_uuid=%s payload=%s",
+            self.server.name, row_id, panel_uuid,
             json.dumps(payload, ensure_ascii=False, default=str),
         )
 
-        result = self._request("POST", f"panel/api/clients/update/{panel_uuid}", json_data=payload)
+        # URL uses integer row_id, NOT uuid string
+        result = self._request("POST", f"panel/api/clients/update/{row_id}", json_data=payload)
 
         logger.warning(
-            "[XUI_TOPUP_DONE] server=%s panel_uuid=%s result=%s",
-            self.server.name, panel_uuid, result,
+            "[XUI_TOPUP_DONE] server=%s row_id=%s result=%s",
+            self.server.name, row_id, result,
         )
         return result
 
@@ -341,7 +345,7 @@ class XuiAPIClient:
         """
         Disable a client by setting enable=False.
         Scans clientStats to find the email, then calls update_client()
-        which will automatically collect all inbound IDs.
+        which will automatically collect all inbound IDs and use the correct row_id.
         """
         logger.warning(
             "[XUI_DISABLE_CLIENT] inbound_id=%s uuid=%s server=%s",
