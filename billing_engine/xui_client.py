@@ -58,9 +58,6 @@ class XuiAPIClient:
     ) -> Dict[str, Any]:
         url = self._url(endpoint)
 
-        # ----------------------------------------------------------------
-        # Full request trace — goes to logs/xui_topup.log AND console
-        # ----------------------------------------------------------------
         logger.warning("[XUI_REQ]  %s  %s", method, url)
         if json_data is not None:
             try:
@@ -83,7 +80,6 @@ class XuiAPIClient:
                     verify=self.verify_ssl,
                 )
 
-                # Full response trace
                 logger.warning(
                     "[XUI_RESP] status=%s  body=%s",
                     response.status_code,
@@ -156,27 +152,15 @@ class XuiAPIClient:
 
     def get_client_by_email(self, email: str) -> Dict[str, Any]:
         """
-        Fetch the full client config object from the inbounds list.
-        Returns the raw client dict (id, email, totalGB, expiryTime, enable, …).
+        Fetch the full client config from the inbounds/list response.
 
-        Strategy:
-          1. Call getClientTraffics/<email> as a quick existence check.
-          2. Walk all inbounds and return the matching client settings dict,
-             which contains totalGB / expiryTime / enable — fields not present
-             in the traffic endpoint response.
+        get_inbounds() returns every inbound with its settings.clients array
+        which contains totalGB, expiryTime, enable, id, subId etc.
+        We scan that directly — no separate per-client endpoint needed,
+        and getClientTraffics/<email> does NOT exist on this 3x-ui build.
         """
-        logger.warning("[XUI_GET_CLIENT] email=%s server=%s", email, self.server.name)
+        logger.warning("[XUI_GET_CLIENT] looking up email=%s on server=%s", email, self.server.name)
 
-        # Step 1: existence / traffic check
-        try:
-            traffic_data = self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
-            if not traffic_data.get("obj"):
-                logger.error("[XUI_GET_CLIENT] client '%s' not found via getClientTraffics", email)
-                raise XuiAPIException(f"Client '{email}' not found on server '{self.server.name}'.")
-        except XuiAPIException:
-            raise
-
-        # Step 2: full config from inbounds
         inbounds_data = self.get_inbounds()
         for inbound in inbounds_data.get("obj", []):
             try:
@@ -186,7 +170,7 @@ class XuiAPIClient:
             for client in settings_obj.get("clients", []):
                 if client.get("email", "").strip().lower() == email.strip().lower():
                     logger.warning(
-                        "[XUI_GET_CLIENT] found email=%s uuid=%s totalGB=%s expiryTime=%s enable=%s",
+                        "[XUI_GET_CLIENT] FOUND email=%s uuid=%s totalGB=%s expiryTime=%s enable=%s",
                         email,
                         client.get("id"),
                         client.get("totalGB"),
@@ -195,8 +179,12 @@ class XuiAPIClient:
                     )
                     return client
 
+        logger.error(
+            "[XUI_GET_CLIENT] NOT FOUND email=%s — not in any inbound on server=%s",
+            email, self.server.name,
+        )
         raise XuiAPIException(
-            f"Client config for '{email}' not found in any inbound on server '{self.server.name}'."
+            f"Client '{email}' not found in any inbound on server '{self.server.name}'."
         )
 
     def add_client(
@@ -235,17 +223,14 @@ class XuiAPIClient:
         inbound_ids: Optional[list] = None,
     ) -> Dict[str, Any]:
         """
-        3x-ui v3 update endpoint: POST /panel/api/clients/update/<uuid>
-        Body: { "inboundIds": [...], "client": { ...full merged config... } }
-
-        Fetches current state first so unchanged fields are preserved.
+        3x-ui v3: POST /panel/api/clients/update/<uuid>
+        Body: { "inboundIds": [...], "client": { full merged config } }
         """
         logger.warning(
             "[XUI_TOPUP_START] server=%s email=%s uuid=%s new_total_gb=%s new_expiry_ms=%s enable=%s",
             self.server.name, email, client_uuid, total_gb, expiry_time_ms, enable,
         )
 
-        # Fetch current record to preserve all unchanged fields.
         current = self.get_client_by_email(email)
         logger.warning(
             "[XUI_TOPUP_CURRENT] server=%s email=%s current_totalGB=%s current_expiry=%s current_enable=%s",
@@ -285,7 +270,7 @@ class XuiAPIClient:
         client_uuid: str,
     ) -> Dict[str, Any]:
         """
-        Disable (block) a client by setting enable=False via the update endpoint.
+        Disable a client by setting enable=False.
         Used by _deprovision_subscription() in tasks.py.
         """
         logger.warning(
@@ -323,6 +308,11 @@ class XuiAPIClient:
         return self._request("POST", f"panel/api/clients/resetTraffic/{email}")
 
     def get_client_traffic(self, email: str) -> Dict[str, Any]:
+        """
+        NOTE: getClientTraffics/<email> returns 404 on this 3x-ui build.
+        Use get_inbounds() + scan clientStats instead if you need live traffic.
+        This method is kept for API compatibility but may not work.
+        """
         return self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
 
     def sync_existing_clients(self) -> list:
