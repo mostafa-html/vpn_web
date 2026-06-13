@@ -159,9 +159,14 @@ def _get_live_client_data_for_uuid(server, target_uuid):
 
 def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None):
     """
-    Push changes to 3x-ui for every inbound this subscription is mapped to.
-    new_total_gb  : plain GB integer (e.g. 10 for 10 GB). Passed directly to totalGB.
-    new_expiry_ms : Unix milliseconds.
+    Push changes to 3x-ui for every server mapping this subscription has.
+
+    Uses the v3 API: POST /panel/api/clients/update/:email
+    XuiAPIClient.update_client() fetches the current client record first,
+    then only overwrites the fields we pass, preserving everything else.
+
+    new_total_gb  : plain GB integer (e.g. 10 for 10 GB). 0 = unlimited.
+    new_expiry_ms : Unix milliseconds. 0 = never.
     new_enable    : bool.
     """
     mappings = SubscriptionConfigMapping.objects.select_related('inbound__server').filter(subscription=sub)
@@ -169,57 +174,78 @@ def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None)
         logger.warning('_xui_update_sub: no mappings for sub %s', sub.pk)
         return
 
+    # Collect one client_email per server (email is global in v3; no need to
+    # call the same server twice if a client spans multiple inbounds there).
+    servers_seen = {}
     for mapping in mappings:
         server = mapping.inbound.server
-        inbound_id = mapping.inbound.xui_inbound_id
-        client_email = mapping.xui_client_email
-        client_uuid = sub.xui_client_uuid
+        if server.pk not in servers_seen:
+            servers_seen[server.pk] = (server, mapping.xui_client_email)
 
-        # Fetch current values from panel to preserve unchanged fields
-        current_total_gb, current_expiry, current_enable = 0, 0, True
-        try:
-            resp = XuiAPIClient(server).get_inbounds()
-            for ib in resp.get('obj', []):
-                if ib.get('id') != inbound_id:
-                    continue
-                for cli in _parse_field(ib.get('settings', {})).get('clients', []):
-                    if cli.get('id') == client_uuid:
-                        current_total_gb = int(cli.get('totalGB', 0))  # plain GB
-                        current_expiry = int(cli.get('expiryTime', 0))
-                        current_enable = cli.get('enable', True)
-                        break
-        except XuiAPIException as e:
-            logger.error('Cannot fetch inbounds for server %s: %s', server.name, e)
+    for server, client_email in servers_seen.values():
+        if not client_email:
+            logger.warning('_xui_update_sub: no client email for sub %s on server %s', sub.pk, server.name)
             continue
-
-        # Use the new value if provided, otherwise keep what the panel already has
-        send_total_gb = int(new_total_gb) if new_total_gb is not None else current_total_gb
-
         try:
-            XuiAPIClient(server).update_client(
-                inbound_id=inbound_id,
-                client_uuid=client_uuid,
-                email=client_email,
-                total_gb=send_total_gb,          # ← plain GB, correct kwarg name
-                expiry_time_ms=new_expiry_ms if new_expiry_ms is not None else current_expiry,
-                enable=new_enable if new_enable is not None else current_enable,
+            # Build kwargs with only the fields that were explicitly provided.
+            # update_client() will fetch current values and merge them, so
+            # we must still pass defaults for the fields we DO want to change.
+            kwargs = {
+                'email': client_email,
+            }
+            if new_total_gb is not None:
+                kwargs['total_gb'] = int(new_total_gb)
+            if new_expiry_ms is not None:
+                kwargs['expiry_time_ms'] = int(new_expiry_ms)
+            if new_enable is not None:
+                kwargs['enable'] = bool(new_enable)
+
+            # update_client fetches current state internally, so any field
+            # not in kwargs will be read from the panel and preserved.
+            # We need to pass ALL three so the merge is unambiguous.
+            # Resolve any missing fields from the current panel state first.
+            if new_total_gb is None or new_expiry_ms is None or new_enable is None:
+                try:
+                    current = XuiAPIClient(server).get_client_by_email(client_email)
+                    if new_total_gb is None:
+                        kwargs['total_gb'] = int(current.get('totalGB', 0))
+                    if new_expiry_ms is None:
+                        kwargs['expiry_time_ms'] = int(current.get('expiryTime', 0))
+                    if new_enable is None:
+                        kwargs['enable'] = bool(current.get('enable', True))
+                except XuiAPIException as e:
+                    logger.error('Cannot fetch current client for sub %s on server %s: %s', sub.pk, server.name, e)
+                    continue
+
+            XuiAPIClient(server).update_client(**kwargs)
+            logger.info(
+                'xui_update_sub ok: sub=%s server=%s email=%s total_gb=%s expiry_ms=%s enable=%s',
+                sub.pk, server.name, client_email,
+                kwargs.get('total_gb'), kwargs.get('expiry_time_ms'), kwargs.get('enable'),
             )
-            logger.info('xui_update_sub ok: sub=%s inbound=%s total_gb=%s', sub.pk, inbound_id, send_total_gb)
         except XuiAPIException as e:
-            logger.error('xui_update_sub failed: sub=%s inbound=%s err=%s', sub.pk, inbound_id, e)
+            logger.error('xui_update_sub failed: sub=%s server=%s err=%s', sub.pk, server.name, e)
 
 
 def _xui_delete_sub(sub):
+    """
+    Delete client on all servers using v3 API: POST /panel/api/clients/del/:email
+    One call per server suffices since email is global in v3.
+    """
     mappings = SubscriptionConfigMapping.objects.select_related('inbound__server').filter(subscription=sub)
+    servers_seen = {}
     for mapping in mappings:
         server = mapping.inbound.server
+        if server.pk not in servers_seen:
+            servers_seen[server.pk] = (server, mapping.xui_client_email)
+
+    for server, client_email in servers_seen.values():
+        if not client_email:
+            continue
         try:
-            XuiAPIClient(server).delete_client(
-                inbound_id=mapping.inbound.xui_inbound_id,
-                client_uuid=sub.xui_client_uuid,
-            )
+            XuiAPIClient(server).delete_client(email=client_email)
         except XuiAPIException as e:
-            logger.error('xui_delete_sub failed: sub=%s err=%s', sub.pk, e)
+            logger.error('xui_delete_sub failed: sub=%s server=%s err=%s', sub.pk, server.name, e)
 
 
 def _create_internal_transaction(user, txn_type, amount, ref_code):
@@ -394,7 +420,6 @@ def _enrich_sub_with_live_data(sub):
 
     live = _get_live_client_data_for_uuid(server, sub.xui_client_uuid)
     if live:
-        # used_bytes are raw traffic bytes; total_gb is plain GB from 3x-ui totalGB field
         used_gb = round(live['used_bytes'] / BYTES_PER_GB, 3)
         total_gb = float(live['total_gb']) if live['total_gb'] else 0.0
         sub.live_used_gb = used_gb
@@ -495,7 +520,6 @@ def subscription_topup(request, sub_id):
                 return redirect('frontend:subscription_detail', sub_id=sub_id)
             user.wallet_balance -= cost
             user.save(update_fields=['wallet_balance'])
-            # Sanitize before adding
             if sub.total_allocated_gb > _MAX_SANE_GB:
                 sub.total_allocated_gb = max(round(sub.total_allocated_gb / BYTES_PER_GB), 1)
             sub.total_allocated_gb += extra_gb
@@ -744,7 +768,7 @@ def _sync_server_inbounds_and_clients(server):
             user_count += 1
         if owner is None:
             owner = import_user
-        total_gb = int(data['total_gb'])   # already plain GB
+        total_gb = int(data['total_gb'])
         used_gb_val = round(data['used_bytes'] / BYTES_PER_GB, 3)
         expires_at = (
             datetime.fromtimestamp(data['expiry_ms'] / 1000, tz=dt_timezone.utc)
@@ -888,7 +912,7 @@ def master_server_clients(request, server_id):
             display_name = (owner_name if owner_name and owner_name != '__imported__' else None) or email or uuid[:8]
             expiry_str, days_left = _expiry_display(d['expiry_ms'])
             used_gb = d['used_bytes'] / BYTES_PER_GB
-            total_gb = float(d['total_gb'])   # plain GB
+            total_gb = float(d['total_gb'])
             remaining_gb = max(total_gb - used_gb, 0) if total_gb else None
             pct = min(int(used_gb / total_gb * 100), 100) if total_gb else 0
             entry = {
@@ -1033,7 +1057,7 @@ def master_subscriptions(request):
             display_name = (owner_name if owner_name and owner_name != '__imported__' else None) or email or uuid[:8]
             expiry_str, days_left = _expiry_display(d['expiry_ms'])
             used_bytes = d['used_bytes']
-            total_gb = float(d['total_gb'])   # plain GB
+            total_gb = float(d['total_gb'])
             used_gb = used_bytes / BYTES_PER_GB
             pct = min(int(used_gb / total_gb * 100), 100) if total_gb else 0
             remaining_gb = max(total_gb - used_gb, 0) if total_gb else None
