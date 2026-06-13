@@ -8,8 +8,6 @@ from billing_engine.models import XuiServer
 
 logger = logging.getLogger(__name__)
 
-BYTES_PER_GB = 1024 ** 3
-
 
 class XuiAPIException(Exception):
     pass
@@ -22,10 +20,11 @@ class XuiAPIClient:
 
     IMPORTANT — unit contract
     -------------------------
-    The 3x-ui API field is named `totalGB` but it stores raw BYTES.
-    - add_client / update_client: pass total_bytes (int, raw bytes). 0 = unlimited.
+    The 3x-ui API field `totalGB` stores PLAIN GIGABYTES (integer).
+    - add_client / update_client: pass total_gb (int, plain GB). 0 = unlimited.
     - expiryTime: Unix milliseconds. 0 = never.
-    When reading back from get_inbounds, cli['totalGB'] is also raw bytes.
+    When reading back from get_inbounds, cli['totalGB'] is also plain GB.
+    DO NOT multiply by 1024**3 when sending, and DO NOT divide by 1024**3 when reading.
     """
 
     def __init__(self, server: XuiServer):
@@ -101,9 +100,9 @@ class XuiAPIClient:
         return self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
 
     def add_client(self, inbound_id: int, client_uuid: str, email: str,
-                   total_bytes: int = 0, expiry_time_ms: int = 0) -> Dict[str, Any]:
+                   total_gb: int = 0, expiry_time_ms: int = 0) -> Dict[str, Any]:
         """
-        total_bytes    : raw bytes cap (e.g. 2*1024**3 for 2 GB). 0 = unlimited.
+        total_gb       : plain GB cap (e.g. 2 for 2 GB). 0 = unlimited.
         expiry_time_ms : Unix ms. 0 = never.
         """
         payload = {
@@ -111,7 +110,7 @@ class XuiAPIClient:
             "settings": json.dumps({"clients": [{
                 "id": client_uuid,
                 "email": email,
-                "totalGB": total_bytes,
+                "totalGB": int(total_gb),
                 "expiryTime": expiry_time_ms,
                 "enable": True,
             }]}),
@@ -119,10 +118,10 @@ class XuiAPIClient:
         return self._request("POST", "panel/api/inbounds/addClient", json_data=payload)
 
     def update_client(self, inbound_id: int, client_uuid: str, email: str,
-                      total_bytes: int = 0, expiry_time_ms: int = 0,
+                      total_gb: int = 0, expiry_time_ms: int = 0,
                       enable: bool = True) -> Dict[str, Any]:
         """
-        total_bytes    : raw bytes cap. 0 = unlimited.
+        total_gb       : plain GB cap (e.g. 2 for 2 GB). 0 = unlimited.
         expiry_time_ms : Unix ms. 0 = never.
         """
         payload = {
@@ -130,7 +129,7 @@ class XuiAPIClient:
             "settings": json.dumps({"clients": [{
                 "id": client_uuid,
                 "email": email,
-                "totalGB": total_bytes,
+                "totalGB": int(total_gb),
                 "expiryTime": expiry_time_ms,
                 "enable": enable,
             }]}),
