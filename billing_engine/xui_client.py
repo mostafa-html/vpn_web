@@ -10,6 +10,8 @@ from billing_engine.models import XuiServer
 
 logger = logging.getLogger(__name__)
 
+BYTES_PER_GB = 1024 ** 3
+
 
 class XuiAPIException(Exception):
     pass
@@ -20,10 +22,22 @@ class XuiAPIClient:
     3x-ui v3+ API client — Bearer token auth.
     Token: Panel Settings -> Security -> API Token.
 
-    UNIT CONTRACT
-    -------------
-    totalGB   : plain integer gigabytes (e.g. 10 = 10 GB, 0 = unlimited).
-    expiryTime: Unix milliseconds. 0 = never expires.
+    FIELD CONTRACT for this 3x-ui build
+    ------------------------------------
+    get_inbounds() returns clients inside inbound.clientStats[], NOT
+    inside inbound.settings.clients[].
+
+    clientStats fields:
+      total      : traffic limit in BYTES  (0 = unlimited)
+      expiryTime : Unix milliseconds       (0 or negative = never/expired)
+      enable     : bool
+      email      : str
+      uuid       : str   (called 'uuid' here, called 'id' in settings.clients)
+
+    update_client() POST body uses the settings.clients schema:
+      totalGB    : plain GB integer
+      expiryTime : Unix milliseconds
+      id         : UUID string
     """
 
     def __init__(self, server: XuiServer):
@@ -140,11 +154,42 @@ class XuiAPIClient:
         return {}
 
     # ------------------------------------------------------------------
-    # Inbounds (read)
+    # Inbounds
     # ------------------------------------------------------------------
 
     def get_inbounds(self) -> Dict[str, Any]:
         return self._request("GET", "panel/api/inbounds/list")
+
+    # ------------------------------------------------------------------
+    # Internal: build a normalised client dict from a clientStats entry.
+    # Normalises 'total' (bytes) -> 'totalGB' (plain GB) so the rest of
+    # the code always works in GB.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalise_client(cs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        clientStats uses:
+          'uuid'  for the client ID   (update endpoint wants 'id')
+          'total' in bytes            (update endpoint wants 'totalGB' in GB)
+
+        Returns a dict shaped like settings.clients so update_client()
+        can merge it directly into the POST body.
+        """
+        total_bytes = int(cs.get("total", 0))
+        total_gb = round(total_bytes / BYTES_PER_GB) if total_bytes > 0 else 0
+        return {
+            "id": cs.get("uuid", ""),          # rename uuid -> id
+            "email": cs.get("email", ""),
+            "totalGB": total_gb,               # bytes -> GB
+            "expiryTime": int(cs.get("expiryTime", 0)),
+            "enable": bool(cs.get("enable", True)),
+            "subId": cs.get("subId", ""),
+            "reset": int(cs.get("reset", 0)),
+            # preserve any extra fields as-is
+            **{k: v for k, v in cs.items()
+               if k not in ("uuid", "total", "email", "expiryTime", "enable", "subId", "reset")},
+        }
 
     # ------------------------------------------------------------------
     # Clients
@@ -152,39 +197,32 @@ class XuiAPIClient:
 
     def get_client_by_email(self, email: str) -> Dict[str, Any]:
         """
-        Fetch the full client config from the inbounds/list response.
-
-        get_inbounds() returns every inbound with its settings.clients array
-        which contains totalGB, expiryTime, enable, id, subId etc.
-        We scan that directly — no separate per-client endpoint needed,
-        and getClientTraffics/<email> does NOT exist on this 3x-ui build.
+        Find a client by email scanning inbound.clientStats[].
+        Returns a normalised dict with 'id' (UUID) and 'totalGB' (plain GB).
         """
         logger.warning("[XUI_GET_CLIENT] looking up email=%s on server=%s", email, self.server.name)
 
         inbounds_data = self.get_inbounds()
         for inbound in inbounds_data.get("obj", []):
-            try:
-                settings_obj = json.loads(inbound.get("settings", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                settings_obj = {}
-            for client in settings_obj.get("clients", []):
-                if client.get("email", "").strip().lower() == email.strip().lower():
+            for cs in inbound.get("clientStats", []):
+                if cs.get("email", "").strip().lower() == email.strip().lower():
+                    normalised = self._normalise_client(cs)
                     logger.warning(
                         "[XUI_GET_CLIENT] FOUND email=%s uuid=%s totalGB=%s expiryTime=%s enable=%s",
                         email,
-                        client.get("id"),
-                        client.get("totalGB"),
-                        client.get("expiryTime"),
-                        client.get("enable"),
+                        normalised["id"],
+                        normalised["totalGB"],
+                        normalised["expiryTime"],
+                        normalised["enable"],
                     )
-                    return client
+                    return normalised
 
         logger.error(
-            "[XUI_GET_CLIENT] NOT FOUND email=%s — not in any inbound on server=%s",
+            "[XUI_GET_CLIENT] NOT FOUND email=%s — not in clientStats on server=%s",
             email, self.server.name,
         )
         raise XuiAPIException(
-            f"Client '{email}' not found in any inbound on server '{self.server.name}'."
+            f"Client '{email}' not found on server '{self.server.name}'."
         )
 
     def add_client(
@@ -244,6 +282,9 @@ class XuiAPIClient:
         merged["totalGB"] = int(total_gb)
         merged["expiryTime"] = int(expiry_time_ms)
         merged["enable"] = bool(enable)
+        # remove clientStats-only fields that don't belong in the update body
+        for drop in ("inboundId", "up", "down", "lastOnline", "uuid", "total"):
+            merged.pop(drop, None)
 
         payload = {
             "inboundIds": [int(i) for i in inbound_ids] if inbound_ids else [],
@@ -271,7 +312,7 @@ class XuiAPIClient:
     ) -> Dict[str, Any]:
         """
         Disable a client by setting enable=False.
-        Used by _deprovision_subscription() in tasks.py.
+        Scans clientStats to find the email for the given UUID.
         """
         logger.warning(
             "[XUI_DISABLE_CLIENT] inbound_id=%s uuid=%s server=%s",
@@ -281,18 +322,14 @@ class XuiAPIClient:
         for inbound in inbounds_data.get("obj", []):
             if int(inbound.get("id", -1)) != int(inbound_id):
                 continue
-            try:
-                settings_obj = json.loads(inbound.get("settings", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                settings_obj = {}
-            for client in settings_obj.get("clients", []):
-                if client.get("id", "") == client_uuid:
-                    email = client.get("email", "")
+            for cs in inbound.get("clientStats", []):
+                if cs.get("uuid", "") == client_uuid:
+                    norm = self._normalise_client(cs)
                     return self.update_client(
-                        email=email,
+                        email=norm["email"],
                         client_uuid=client_uuid,
-                        total_gb=int(client.get("totalGB", 0)),
-                        expiry_time_ms=int(client.get("expiryTime", 0)),
+                        total_gb=norm["totalGB"],
+                        expiry_time_ms=norm["expiryTime"],
                         enable=False,
                         inbound_ids=[inbound_id],
                     )
@@ -310,27 +347,26 @@ class XuiAPIClient:
     def get_client_traffic(self, email: str) -> Dict[str, Any]:
         """
         NOTE: getClientTraffics/<email> returns 404 on this 3x-ui build.
-        Use get_inbounds() + scan clientStats instead if you need live traffic.
-        This method is kept for API compatibility but may not work.
+        Use get_inbounds() + scan clientStats instead.
         """
         return self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
 
     def sync_existing_clients(self) -> list:
+        """
+        Returns a flat list of all clients across all inbounds,
+        sourced from clientStats (not settings.clients).
+        """
         result = self.get_inbounds()
         clients = []
         for inbound in result.get("obj", []):
             inbound_id = inbound.get("id")
             protocol = inbound.get("protocol", "").upper()
-            try:
-                settings_obj = json.loads(inbound.get("settings", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                settings_obj = {}
-            for client in settings_obj.get("clients", []):
+            for cs in inbound.get("clientStats", []):
                 clients.append({
                     "inbound_id": inbound_id,
                     "protocol": protocol,
-                    "email": client.get("email", ""),
-                    "uuid": client.get("id", ""),
-                    "enable": client.get("enable", True),
+                    "email": cs.get("email", ""),
+                    "uuid": cs.get("uuid", ""),
+                    "enable": cs.get("enable", True),
                 })
         return clients
