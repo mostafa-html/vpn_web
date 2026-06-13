@@ -113,6 +113,10 @@ def _build_subscription_url(server, client_uuid):
 
 
 def _get_live_client_data_for_uuid(server, target_uuid):
+    """
+    Returns aggregated live stats for a UUID across all inbounds.
+    total_bytes: raw bytes from 3x-ui totalGB field (which IS bytes despite the name)
+    """
     try:
         result = XuiAPIClient(server).get_inbounds()
     except XuiAPIException as e:
@@ -135,8 +139,8 @@ def _get_live_client_data_for_uuid(server, target_uuid):
             aggregated['used_bytes'] += int(stats.get('up', 0)) + int(stats.get('down', 0))
             aggregated['email'] = email
             aggregated['enable'] = cli.get('enable', True)
-            # totalGB from 3x-ui is plain GB — convert to bytes for consistent internal use
-            total_bytes = int(cli.get('totalGB', 0)) * BYTES_PER_GB
+            # totalGB from 3x-ui is raw BYTES (field name is misleading)
+            total_bytes = int(cli.get('totalGB', 0))
             expiry_ms = int(cli.get('expiryTime', 0))
             if total_bytes > aggregated['total_bytes']:
                 aggregated['total_bytes'] = total_bytes
@@ -152,10 +156,8 @@ def _get_live_client_data_for_uuid(server, target_uuid):
 
 def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None):
     """
-    Push changed fields to every inbound this subscription is mapped to.
-    Fetches current live values first so un-changed fields are preserved.
-
-    new_total_gb  : plain gigabytes (e.g. 10)  — NOT bytes
+    Push changes to 3x-ui for every inbound this subscription is mapped to.
+    new_total_gb  : plain GB (e.g. 2) — converted to bytes internally before sending
     new_expiry_ms : Unix milliseconds
     new_enable    : bool
     """
@@ -170,7 +172,8 @@ def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None)
         client_email = mapping.xui_client_email
         client_uuid = sub.xui_client_uuid
 
-        current_total_gb, current_expiry, current_enable = 0, 0, True
+        # Fetch current values from panel to preserve un-changed fields
+        current_total_bytes, current_expiry, current_enable = 0, 0, True
         try:
             resp = XuiAPIClient(server).get_inbounds()
             for ib in resp.get('obj', []):
@@ -178,7 +181,7 @@ def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None)
                     continue
                 for cli in _parse_field(ib.get('settings', {})).get('clients', []):
                     if cli.get('id') == client_uuid:
-                        current_total_gb = int(cli.get('totalGB', 0))  # plain GB
+                        current_total_bytes = int(cli.get('totalGB', 0))  # raw bytes
                         current_expiry = int(cli.get('expiryTime', 0))
                         current_enable = cli.get('enable', True)
                         break
@@ -186,22 +189,27 @@ def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None)
             logger.error('Cannot fetch inbounds for server %s: %s', server.name, e)
             continue
 
+        # Convert incoming GB to bytes only when a new value is provided
+        if new_total_gb is not None:
+            send_total_bytes = int(new_total_gb) * BYTES_PER_GB
+        else:
+            send_total_bytes = current_total_bytes
+
         try:
             XuiAPIClient(server).update_client(
                 inbound_id=inbound_id,
                 client_uuid=client_uuid,
                 email=client_email,
-                total_gb=new_total_gb if new_total_gb is not None else current_total_gb,
+                total_bytes=send_total_bytes,
                 expiry_time_ms=new_expiry_ms if new_expiry_ms is not None else current_expiry,
                 enable=new_enable if new_enable is not None else current_enable,
             )
-            logger.info('xui_update_sub: sub=%s inbound=%s ok', sub.pk, inbound_id)
+            logger.info('xui_update_sub ok: sub=%s inbound=%s bytes=%s', sub.pk, inbound_id, send_total_bytes)
         except XuiAPIException as e:
             logger.error('xui_update_sub failed: sub=%s inbound=%s err=%s', sub.pk, inbound_id, e)
 
 
 def _xui_delete_sub(sub):
-    """Remove a client from every inbound it is mapped to on 3x-ui."""
     mappings = SubscriptionConfigMapping.objects.select_related('inbound__server').filter(subscription=sub)
     for mapping in mappings:
         server = mapping.inbound.server
@@ -210,9 +218,8 @@ def _xui_delete_sub(sub):
                 inbound_id=mapping.inbound.xui_inbound_id,
                 client_uuid=sub.xui_client_uuid,
             )
-            logger.info('xui_delete_sub: sub=%s inbound=%s ok', sub.pk, mapping.inbound.xui_inbound_id)
         except XuiAPIException as e:
-            logger.error('xui_delete_sub failed: sub=%s inbound=%s err=%s', sub.pk, mapping.inbound.xui_inbound_id, e)
+            logger.error('xui_delete_sub failed: sub=%s err=%s', sub.pk, e)
 
 
 def _create_internal_transaction(user, txn_type, amount, ref_code):
@@ -364,6 +371,7 @@ def _enrich_sub_with_live_data(sub):
 
     live = _get_live_client_data_for_uuid(server, sub.xui_client_uuid)
     if live:
+        # live['total_bytes'] is raw bytes from 3x-ui totalGB field
         used_gb = live['used_bytes'] / BYTES_PER_GB
         total_gb = live['total_bytes'] / BYTES_PER_GB if live['total_bytes'] else 0
         sub.live_used_gb = round(used_gb, 3)
@@ -460,7 +468,7 @@ def subscription_topup(request, sub_id):
                 return redirect('frontend:subscription_detail', sub_id=sub_id)
             cost = (Decimal(str(extra_gb)) * price_per_gb).quantize(Decimal('0.01'))
             if user.wallet_balance < cost:
-                messages.error(request, f'Insufficient balance. Need {cost} IRR, have {user.wallet_balance} IRR.')
+                messages.error(request, f'Insufficient balance. Need {cost}, have {user.wallet_balance}.')
                 return redirect('frontend:subscription_detail', sub_id=sub_id)
             user.wallet_balance -= cost
             user.save(update_fields=['wallet_balance'])
@@ -469,8 +477,8 @@ def subscription_topup(request, sub_id):
             sub.save(update_fields=['total_allocated_gb', 'is_active', 'updated_at'])
             _create_internal_transaction(user=user, txn_type=Transaction.TypeChoices.PLAN_PURCHASE,
                                          amount=cost, ref_code=f'TOPUP{sub.id}T{ts}')
-            xui_push_kwargs['new_total_gb'] = int(sub.total_allocated_gb)  # plain GB
-            messages.success(request, f'{extra_gb} GB added. Cost: {cost} IRR.')
+            xui_push_kwargs['new_total_gb'] = int(sub.total_allocated_gb)  # GB — _xui_update_sub converts to bytes
+            messages.success(request, f'{extra_gb} GB added. Cost: {cost}.')
 
         elif action == 'renew':
             try:
@@ -485,7 +493,7 @@ def subscription_topup(request, sub_id):
                 return redirect('frontend:subscription_detail', sub_id=sub_id)
             cost = (Decimal(str(extra_days)) * price_per_day).quantize(Decimal('0.01'))
             if user.wallet_balance < cost:
-                messages.error(request, f'Insufficient balance. Need {cost} IRR, have {user.wallet_balance} IRR.')
+                messages.error(request, f'Insufficient balance. Need {cost}, have {user.wallet_balance}.')
                 return redirect('frontend:subscription_detail', sub_id=sub_id)
             user.wallet_balance -= cost
             user.save(update_fields=['wallet_balance'])
@@ -496,7 +504,7 @@ def subscription_topup(request, sub_id):
             _create_internal_transaction(user=user, txn_type=Transaction.TypeChoices.PLAN_PURCHASE,
                                          amount=cost, ref_code=f'RENEW{sub.id}T{ts}')
             xui_push_kwargs['new_expiry_ms'] = int(sub.expires_at.timestamp() * 1000)
-            messages.success(request, f'{extra_days} days added. Cost: {cost} IRR.')
+            messages.success(request, f'{extra_days} days added. Cost: {cost}.')
 
         else:
             messages.error(request, 'Invalid action.')
@@ -506,7 +514,7 @@ def subscription_topup(request, sub_id):
             _xui_update_sub(sub, **xui_push_kwargs)
         except Exception as e:
             logger.error('3x-ui push failed for sub %s: %s', sub.pk, e)
-            messages.warning(request, 'Balance updated but could not reach the VPN panel. Changes will appear on next sync.')
+            messages.warning(request, 'Balance updated but could not reach the VPN panel.')
 
     return redirect('frontend:subscription_detail', sub_id=sub_id)
 
@@ -621,8 +629,8 @@ def _build_live_client_map(server):
             up = int(stats.get('up', 0))
             down = int(stats.get('down', 0))
             used = up + down
-            # totalGB from 3x-ui is plain GB — convert to bytes for internal display
-            total_bytes = int(cli.get('totalGB', 0)) * BYTES_PER_GB
+            # totalGB is raw bytes
+            total_bytes = int(cli.get('totalGB', 0))
             expiry_ms = int(cli.get('expiryTime', 0))
             if uuid not in result:
                 result[uuid] = {
@@ -687,8 +695,7 @@ def _sync_server_inbounds_and_clients(server):
             stats = stats_by_email.get(email, {})
             up = int(stats.get('up', 0))
             down = int(stats.get('down', 0))
-            # totalGB from 3x-ui is plain GB — convert to bytes for DB storage
-            total_bytes = int(cli.get('totalGB', 0)) * BYTES_PER_GB
+            total_bytes = int(cli.get('totalGB', 0))  # raw bytes
             expiry_ms = int(cli.get('expiryTime', 0))
             if uuid not in uuid_to_data:
                 uuid_to_data[uuid] = {
@@ -800,7 +807,7 @@ def master_create_user(request):
         username=email, email=email, password=email,
         role=role_value, parent_manager=parent,
     )
-    messages.success(request, f'User "{new_user.username}" created. Default password = email.')
+    messages.success(request, f'User "{new_user.username}" created.')
     return redirect('frontend:master_users')
 
 
@@ -1087,13 +1094,13 @@ def master_subscription_edit(request, sub_id):
             try:
                 _xui_update_sub(
                     sub,
-                    new_total_gb=int(sub.total_allocated_gb),  # plain GB
+                    new_total_gb=int(sub.total_allocated_gb),  # GB — _xui_update_sub converts to bytes
                     new_expiry_ms=int(sub.expires_at.timestamp() * 1000),
                     new_enable=sub.is_active,
                 )
             except Exception as e:
                 logger.error('3x-ui edit sync failed for sub %s: %s', sub.pk, e)
-                messages.warning(request, 'DB updated but could not sync changes to the VPN panel.')
+                messages.warning(request, 'DB updated but could not sync to VPN panel.')
             else:
                 messages.success(request, 'Subscription updated and synced to VPN panel.')
 

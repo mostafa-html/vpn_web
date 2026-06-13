@@ -19,20 +19,14 @@ BYTES_PER_GB = 1024 ** 3
 
 
 class InsufficientFundsError(Exception):
-    """Raised when wallet balance is lower than the purchase cost."""
     pass
 
 
 class NoAvailableServerError(Exception):
-    """Raised when no active inbound has capacity for a new client."""
     pass
 
 
 def _pick_inbound() -> XuiInbound:
-    """
-    Return the least-loaded available inbound.
-    Raises NoAvailableServerError if nothing is available.
-    """
     inbounds = (
         XuiInbound.objects
         .filter(is_available_for_purchase=True, server__is_active=True)
@@ -70,13 +64,6 @@ def process_purchase(
     custom_gb: Optional[int] = None,
     custom_days: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    Full subscription purchase flow:
-      1. Validate inputs & resolve pricing
-      2. Pick least-loaded available inbound
-      3. Deduct wallet + create DB records (atomic)
-      4. Call 3x-ui addClient API (outside atomic)
-    """
     # 1. Input normalisation
     if plan is not None:
         if custom_gb is not None or custom_days is not None:
@@ -91,15 +78,13 @@ def process_purchase(
         total_gb = custom_gb
         duration_days = custom_days
 
-    # 2. Billing account & pricing tier
+    # 2. Pricing
     if buyer.role == CustomUser.Role.END_USER and buyer.parent_manager is not None:
         billing_account = buyer.parent_manager
         pricing_target = buyer.parent_manager
-        is_wholesale = True
     else:
         billing_account = buyer
         pricing_target = buyer
-        is_wholesale = False
 
     tier = (
         PricingTier.objects.filter(specific_user=pricing_target).first()
@@ -118,19 +103,16 @@ def process_purchase(
         + (Decimal(str(duration_days)) * tier.price_per_day)
     ).quantize(Decimal('0.01'))
 
-    # 3. Pick inbound (read-only, before lock)
     inbound = _pick_inbound()
     server = inbound.server
 
-    # 4. Atomic billing + DB provisioning
     client_uuid = str(uuid.uuid4())
     payment_ref = f"TXN{uuid.uuid4().hex.upper()[:12]}"
     expires_at = timezone.now() + timedelta(days=duration_days)
     sub_url = _build_subscription_url(server, client_uuid)
     xui_email = f"{buyer.username.split('@')[0]}_{client_uuid[:8]}@vpn.local"
     expiry_ms = int(expires_at.timestamp() * 1000)
-    # 3x-ui totalGB field takes plain GB (NOT bytes)
-    total_gb_for_xui = int(total_gb)
+    total_bytes = int(total_gb) * BYTES_PER_GB  # 3x-ui totalGB field = raw bytes
 
     with transaction.atomic():
         locked_account = CustomUser.objects.select_for_update().get(pk=billing_account.pk)
@@ -167,25 +149,24 @@ def process_purchase(
             xui_client_email=xui_email,
         )
 
-    logger.info('Purchase complete: buyer=%s ref=%s sub=%s gb=%s', buyer.pk, payment_ref, sub.pk, total_gb)
+    logger.info('Purchase: buyer=%s ref=%s sub=%s gb=%s', buyer.pk, payment_ref, sub.pk, total_gb)
 
-    # 5. Provision on 3x-ui (outside atomic)
+    # Provision on 3x-ui — totalGB = raw bytes
     try:
         XuiAPIClient(server).add_client(
             inbound_id=inbound.xui_inbound_id,
             client_uuid=client_uuid,
             email=xui_email,
-            total_gb=total_gb_for_xui,   # plain GB
+            total_bytes=total_bytes,
             expiry_time_ms=expiry_ms,
         )
-        logger.info('3x-ui client added: uuid=%s inbound=%s gb=%s', client_uuid, inbound.xui_inbound_id, total_gb_for_xui)
+        logger.info('3x-ui client added: uuid=%s bytes=%s', client_uuid, total_bytes)
     except XuiAPIException as e:
-        logger.error('Failed to add client to 3x-ui for sub %s: %s', sub.pk, e)
+        logger.error('Failed to add 3x-ui client for sub %s: %s', sub.pk, e)
 
     return {
         'status': 'SUCCESS',
         'debited_account_id': str(locked_account.id),
-        'is_wholesale': is_wholesale,
         'amount_charged': total_cost,
         'payment_ref_code': payment_ref,
         'ledger_transaction_id': str(ledger_entry.id),

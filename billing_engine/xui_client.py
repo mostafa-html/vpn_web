@@ -8,6 +8,8 @@ from billing_engine.models import XuiServer
 
 logger = logging.getLogger(__name__)
 
+BYTES_PER_GB = 1024 ** 3
+
 
 class XuiAPIException(Exception):
     pass
@@ -17,14 +19,13 @@ class XuiAPIClient:
     """
     3x-ui v3.3.1+ API client using Bearer token auth.
     Token: Panel Settings -> Security -> API Token
-    URL layout (example base_path=/secret/):
-      API -> https://host:port/secret/panel/api/...
 
-    NOTE on units
-    -------------
-    The 3x-ui REST API stores traffic limits as BYTES in the `totalGB` field
-    despite its misleading name.  Pass raw bytes for all traffic cap arguments.
-    Expiry is always Unix milliseconds.
+    IMPORTANT — unit contract
+    -------------------------
+    The 3x-ui API field is named `totalGB` but it stores raw BYTES.
+    - add_client / update_client: pass total_bytes (int, raw bytes). 0 = unlimited.
+    - expiryTime: Unix milliseconds. 0 = never.
+    When reading back from get_inbounds, cli['totalGB'] is also raw bytes.
     """
 
     def __init__(self, server: XuiServer):
@@ -93,93 +94,54 @@ class XuiAPIClient:
                 raise XuiAPIException(f"Request failed: {e}") from e
         return {}
 
-    # ------------------------------------------------------------------
-    # READ
-    # ------------------------------------------------------------------
-
     def get_inbounds(self) -> Dict[str, Any]:
         return self._request("GET", "panel/api/inbounds/list")
 
     def get_client_traffic(self, email: str) -> Dict[str, Any]:
         return self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
 
-    # ------------------------------------------------------------------
-    # CREATE
-    # ------------------------------------------------------------------
-
     def add_client(self, inbound_id: int, client_uuid: str, email: str,
-                   total_gb: int = 0, expiry_time_ms: int = 0) -> Dict[str, Any]:
+                   total_bytes: int = 0, expiry_time_ms: int = 0) -> Dict[str, Any]:
         """
-        Add a new client to an inbound.
-
-        total_gb       : traffic cap in plain GIGABYTES (e.g. 10 = 10 GB). 0 = unlimited.
-        expiry_time_ms : expiry as Unix milliseconds. 0 = never expires.
+        total_bytes    : raw bytes cap (e.g. 2*1024**3 for 2 GB). 0 = unlimited.
+        expiry_time_ms : Unix ms. 0 = never.
         """
-        client_payload = {
-            "id": client_uuid,
-            "email": email,
-            "totalGB": total_gb,
-            "expiryTime": expiry_time_ms,
-            "enable": True,
-        }
         payload = {
             "id": inbound_id,
-            "settings": json.dumps({"clients": [client_payload]}),
+            "settings": json.dumps({"clients": [{
+                "id": client_uuid,
+                "email": email,
+                "totalGB": total_bytes,
+                "expiryTime": expiry_time_ms,
+                "enable": True,
+            }]}),
         }
         return self._request("POST", "panel/api/inbounds/addClient", json_data=payload)
 
-    # ------------------------------------------------------------------
-    # UPDATE
-    # ------------------------------------------------------------------
-
     def update_client(self, inbound_id: int, client_uuid: str, email: str,
-                      total_gb: int = 0, expiry_time_ms: int = 0,
+                      total_bytes: int = 0, expiry_time_ms: int = 0,
                       enable: bool = True) -> Dict[str, Any]:
         """
-        Update an existing client.
-
-        total_gb       : traffic cap in plain GIGABYTES (e.g. 10 = 10 GB). 0 = unlimited.
-        expiry_time_ms : expiry as Unix milliseconds. 0 = never expires.
-        enable         : whether the client is active.
+        total_bytes    : raw bytes cap. 0 = unlimited.
+        expiry_time_ms : Unix ms. 0 = never.
         """
-        client_payload = {
-            "id": client_uuid,
-            "email": email,
-            "totalGB": total_gb,
-            "expiryTime": expiry_time_ms,
-            "enable": enable,
-        }
         payload = {
             "id": inbound_id,
-            "settings": json.dumps({"clients": [client_payload]}),
+            "settings": json.dumps({"clients": [{
+                "id": client_uuid,
+                "email": email,
+                "totalGB": total_bytes,
+                "expiryTime": expiry_time_ms,
+                "enable": enable,
+            }]}),
         }
-        return self._request(
-            "POST",
-            f"panel/api/inbounds/updateClient/{client_uuid}",
-            json_data=payload,
-        )
-
-    # ------------------------------------------------------------------
-    # DELETE
-    # ------------------------------------------------------------------
+        return self._request("POST", f"panel/api/inbounds/updateClient/{client_uuid}", json_data=payload)
 
     def delete_client(self, inbound_id: int, client_uuid: str) -> Dict[str, Any]:
-        """Remove a client from an inbound entirely."""
-        return self._request(
-            "POST",
-            f"panel/api/inbounds/{inbound_id}/delClient/{client_uuid}",
-        )
-
-    # ------------------------------------------------------------------
-    # MISC
-    # ------------------------------------------------------------------
+        return self._request("POST", f"panel/api/inbounds/{inbound_id}/delClient/{client_uuid}")
 
     def reset_client_traffic(self, inbound_id: int, email: str) -> Dict[str, Any]:
-        """Reset a client's up/down counters to zero."""
-        return self._request(
-            "POST",
-            f"panel/api/inbounds/{inbound_id}/resetClientTraffic/{email}",
-        )
+        return self._request("POST", f"panel/api/inbounds/{inbound_id}/resetClientTraffic/{email}")
 
     def sync_existing_clients(self) -> list:
         result = self.get_inbounds()
