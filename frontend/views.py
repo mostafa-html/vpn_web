@@ -26,6 +26,9 @@ from .decorators import require_role
 logger = logging.getLogger(__name__)
 
 BYTES_PER_GB = 1024 ** 3
+# If total_allocated_gb in DB is >= this threshold it was stored as bytes by mistake.
+# 1 TB = 1024 GB is a safe upper bound; anything larger is clearly bytes, not GB.
+_MAX_SANE_GB = 1024 * 1024  # 1 PB in GB – anything over this is a bytes-valued corruption
 
 
 def _parse_field(value):
@@ -115,7 +118,7 @@ def _build_subscription_url(server, client_uuid):
 def _get_live_client_data_for_uuid(server, target_uuid):
     """
     Returns aggregated live stats for a UUID across all inbounds.
-    total_bytes: raw bytes from 3x-ui totalGB field (which IS bytes despite the name)
+    total_bytes: raw bytes (3x-ui totalGB field stores bytes despite the name).
     """
     try:
         result = XuiAPIClient(server).get_inbounds()
@@ -157,9 +160,9 @@ def _get_live_client_data_for_uuid(server, target_uuid):
 def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None):
     """
     Push changes to 3x-ui for every inbound this subscription is mapped to.
-    new_total_gb  : plain GB (e.g. 2) — converted to bytes internally before sending
-    new_expiry_ms : Unix milliseconds
-    new_enable    : bool
+    new_total_gb  : plain GB (e.g. 2) — converted to bytes internally before sending.
+    new_expiry_ms : Unix milliseconds.
+    new_enable    : bool.
     """
     mappings = SubscriptionConfigMapping.objects.select_related('inbound__server').filter(subscription=sub)
     if not mappings.exists():
@@ -172,7 +175,7 @@ def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None)
         client_email = mapping.xui_client_email
         client_uuid = sub.xui_client_uuid
 
-        # Fetch current values from panel to preserve un-changed fields
+        # Fetch current values from panel to preserve unchanged fields
         current_total_bytes, current_expiry, current_enable = 0, 0, True
         try:
             resp = XuiAPIClient(server).get_inbounds()
@@ -350,15 +353,40 @@ def custom_plan(request):
 
 
 def _enrich_sub_with_live_data(sub):
-    mapping = SubscriptionConfigMapping.objects.select_related('inbound__server').filter(subscription=sub).first()
+    """
+    Fetch live data from 3x-ui and attach display-ready attributes to sub:
+      sub.live_used_gb   – float, GB used
+      sub.live_total_gb  – float, GB allocated
+      sub.live_expiry_str – str date or 'No expiry'
+      sub.live_remaining_days – int
+      sub.live_error      – str or None
 
+    Also sanitizes sub.total_allocated_gb in the DB if it looks like it was
+    accidentally stored as bytes instead of GB (any value > _MAX_SANE_GB).
+    """
+    # ---- Sanitize corrupted DB field first ----
+    if sub.total_allocated_gb > _MAX_SANE_GB:
+        # Value is clearly in bytes, not GB — convert and persist
+        corrected_gb = max(round(sub.total_allocated_gb / BYTES_PER_GB), 1)
+        logger.warning(
+            'Correcting corrupted total_allocated_gb for sub %s: %s -> %s GB',
+            sub.pk, sub.total_allocated_gb, corrected_gb
+        )
+        sub.total_allocated_gb = corrected_gb
+        try:
+            ProxySubscription.objects.filter(pk=sub.pk).update(total_allocated_gb=corrected_gb)
+        except Exception as e:
+            logger.warning('Could not persist corrected total_allocated_gb for sub %s: %s', sub.pk, e)
+
+    # ---- Default display values from DB ----
     sub.live_used_gb = float(sub.used_gb)
-    sub.live_total_gb = sub.total_allocated_gb
+    sub.live_total_gb = float(sub.total_allocated_gb)
     sub.live_expiry_str = sub.expires_at.strftime('%Y-%m-%d') if sub.expires_at else None
     now = timezone.now()
     sub.live_remaining_days = max((sub.expires_at - now).days, 0) if sub.expires_at and sub.expires_at > now else 0
     sub.live_error = None
 
+    mapping = SubscriptionConfigMapping.objects.select_related('inbound__server').filter(subscription=sub).first()
     if not mapping:
         return sub
 
@@ -372,11 +400,12 @@ def _enrich_sub_with_live_data(sub):
     live = _get_live_client_data_for_uuid(server, sub.xui_client_uuid)
     if live:
         # live['total_bytes'] is raw bytes from 3x-ui totalGB field
-        used_gb = live['used_bytes'] / BYTES_PER_GB
-        total_gb = live['total_bytes'] / BYTES_PER_GB if live['total_bytes'] else 0
-        sub.live_used_gb = round(used_gb, 3)
-        sub.live_total_gb = round(total_gb, 2)
+        used_gb = round(live['used_bytes'] / BYTES_PER_GB, 3)
+        total_gb = round(live['total_bytes'] / BYTES_PER_GB, 2) if live['total_bytes'] else 0
+        sub.live_used_gb = used_gb
+        sub.live_total_gb = total_gb if total_gb > 0 else float(sub.total_allocated_gb)
 
+        # Backfill DB if total_allocated_gb is still 0
         update_fields = []
         if sub.total_allocated_gb == 0 and total_gb > 0:
             sub.total_allocated_gb = int(total_gb) or 1
@@ -472,12 +501,15 @@ def subscription_topup(request, sub_id):
                 return redirect('frontend:subscription_detail', sub_id=sub_id)
             user.wallet_balance -= cost
             user.save(update_fields=['wallet_balance'])
+            # Sanitize total_allocated_gb before adding to it
+            if sub.total_allocated_gb > _MAX_SANE_GB:
+                sub.total_allocated_gb = max(round(sub.total_allocated_gb / BYTES_PER_GB), 1)
             sub.total_allocated_gb += extra_gb
             sub.is_active = True
             sub.save(update_fields=['total_allocated_gb', 'is_active', 'updated_at'])
             _create_internal_transaction(user=user, txn_type=Transaction.TypeChoices.PLAN_PURCHASE,
                                          amount=cost, ref_code=f'TOPUP{sub.id}T{ts}')
-            xui_push_kwargs['new_total_gb'] = int(sub.total_allocated_gb)  # GB — _xui_update_sub converts to bytes
+            xui_push_kwargs['new_total_gb'] = int(sub.total_allocated_gb)
             messages.success(request, f'{extra_gb} GB added. Cost: {cost}.')
 
         elif action == 'renew':
@@ -629,8 +661,7 @@ def _build_live_client_map(server):
             up = int(stats.get('up', 0))
             down = int(stats.get('down', 0))
             used = up + down
-            # totalGB is raw bytes
-            total_bytes = int(cli.get('totalGB', 0))
+            total_bytes = int(cli.get('totalGB', 0))  # raw bytes
             expiry_ms = int(cli.get('expiryTime', 0))
             if uuid not in result:
                 result[uuid] = {
@@ -1094,7 +1125,7 @@ def master_subscription_edit(request, sub_id):
             try:
                 _xui_update_sub(
                     sub,
-                    new_total_gb=int(sub.total_allocated_gb),  # GB — _xui_update_sub converts to bytes
+                    new_total_gb=int(sub.total_allocated_gb),
                     new_expiry_ms=int(sub.expires_at.timestamp() * 1000),
                     new_enable=sub.is_active,
                 )

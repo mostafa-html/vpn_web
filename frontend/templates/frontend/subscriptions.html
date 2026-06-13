@@ -29,15 +29,17 @@
               <div>
                 <span class="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-green-900 text-green-300 mb-1">Active</span>
                 <p class="text-white font-mono text-sm">{{ sub.xui_client_uuid }}</p>
-                {% if sub.expires_at %}
+                {% if sub.live_expiry_str %}
+                  <p class="text-slate-400 text-xs mt-0.5">Expires: {{ sub.live_expiry_str }}</p>
+                {% elif sub.expires_at %}
                   <p class="text-slate-400 text-xs mt-0.5">Expires: {{ sub.expires_at|date:"Y-m-d" }}</p>
                 {% endif %}
               </div>
               <a href="{% url 'frontend:subscription_detail' sub.id %}" class="text-indigo-400 hover:text-indigo-300 text-sm whitespace-nowrap">Details →</a>
             </div>
 
-            <!-- Usage bar -->
-            {% with used=sub.used_gb total=sub.total_allocated_gb %}
+            <!-- Usage bar — use live-enriched values -->
+            {% with used=sub.live_used_gb total=sub.live_total_gb %}
               {% if total > 0 %}
                 {% widthratio used total 100 as pct %}
                 <div>
@@ -49,6 +51,8 @@
                     <div class="bg-indigo-500 h-2 rounded-full" style="width: {{ pct }}%"></div>
                   </div>
                 </div>
+              {% else %}
+                <p class="text-xs text-slate-500">Usage data unavailable</p>
               {% endif %}
             {% endwith %}
 
