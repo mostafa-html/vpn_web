@@ -2,15 +2,15 @@ from pathlib import Path
 from decouple import config, Csv
 from celery.schedules import crontab
 
-# ─── Paths ───────────────────────────────────────────────────────────────────
+# ─── Paths ────────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# ─── Core ───────────────────────────────────────────────────────────────────
+# ─── Core ────────────────────────────────────────────────────────────────────────
 SECRET_KEY = config("SECRET_KEY", default="django-insecure-g2=%j((j))&yrac9_$asxx&kf(-+tvxl)4hm7uqhv((gc(b%uy")
 DEBUG = config("DEBUG", default=True, cast=bool)
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="localhost,127.0.0.1", cast=Csv())
 
-# ─── Applications ──────────────────────────────────────────────────────────
+# ─── Applications ───────────────────────────────────────────────────────────────────
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -54,7 +54,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "vShop.wsgi.application"
 
-# ─── Database ───────────────────────────────────────────────────────────────
+# ─── Database ────────────────────────────────────────────────────────────────────────
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
@@ -62,7 +62,7 @@ DATABASES = {
     }
 }
 
-# ─── Auth ──────────────────────────────────────────────────────────────────
+# ─── Auth ────────────────────────────────────────────────────────────────────────
 AUTH_USER_MODEL = "billing_engine.CustomUser"
 LOGIN_URL = "frontend:login"
 LOGIN_REDIRECT_URL = "frontend:index"
@@ -75,13 +75,13 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# ─── Internationalisation ────────────────────────────────────────────────────
+# ─── Internationalisation ────────────────────────────────────────────────────────────────────
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-# ─── Static & Media ────────────────────────────────────────────────────────
+# ─── Static & Media ──────────────────────────────────────────────────────────────────────
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
@@ -91,7 +91,7 @@ MEDIA_ROOT = BASE_DIR / "protected_media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# ─── Redis / Cache ─────────────────────────────────────────────────────────
+# ─── Redis / Cache ──────────────────────────────────────────────────────────────────────
 REDIS_URL = config("REDIS_URL", default="redis://redis:6379/0")
 
 CACHES = {
@@ -108,14 +108,10 @@ CACHES = {
     }
 }
 
-# cached_db: reads from Redis (fast) but writes through to SQLite (durable).
-# Sessions survive Redis restarts and IGNORE_EXCEPTIONS cache misses.
-# Pure cache-only sessions + IGNORE_EXCEPTIONS silently drop sessions on
-# Redis hiccups, causing CSRF token mismatch (403) on the next POST.
 SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
 SESSION_CACHE_ALIAS = "default"
 
-# ─── Celery ─────────────────────────────────────────────────────────────
+# ─── Celery ────────────────────────────────────────────────────────────────────────
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = config("REDIS_URL", default="redis://redis:6379/1")
 CELERY_ACCEPT_CONTENT = ["json"]
@@ -125,7 +121,7 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_SOFT_TIME_LIMIT = 300
 CELERY_TASK_TIME_LIMIT = 360
 
-# ─── Celery Beat ─────────────────────────────────────────────────────────
+# ─── Celery Beat ───────────────────────────────────────────────────────────────────────
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
 CELERY_BEAT_SCHEDULE = {
     "sync-edge-traffic-every-10min": {
@@ -135,5 +131,77 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
-# ─── Protected Media ─────────────────────────────────────────────────────
+# ─── Protected Media ─────────────────────────────────────────────────────────────────────
 PROTECTED_MEDIA_ROOT = BASE_DIR / "protected_media"
+
+# ─── Logging ────────────────────────────────────────────────────────────────────────
+# Creates two log files in BASE_DIR/logs/:
+#   xui_topup.log  — every XUI_ prefixed line from xui_client.py (DEBUG+)
+#   django.log     — general WARNING+ from all other Django/app loggers
+# Both also print to console (stdout) so docker logs picks them up.
+_LOGS_DIR = BASE_DIR / "logs"
+_LOGS_DIR.mkdir(exist_ok=True)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{asctime} {levelname} {name} {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        # Prints to stdout — captured by `docker logs` or gunicorn
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+        # Dedicated log for every 3x-ui API interaction (XUI_ prefixed lines)
+        "xui_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(_LOGS_DIR / "xui_topup.log"),
+            "maxBytes": 10 * 1024 * 1024,  # 10 MB
+            "backupCount": 5,
+            "formatter": "verbose",
+        },
+        # General application log
+        "app_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(_LOGS_DIR / "django.log"),
+            "maxBytes": 10 * 1024 * 1024,  # 10 MB
+            "backupCount": 5,
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        # Captures all XUI_ lines from xui_client.py at DEBUG level
+        "billing_engine.xui_client": {
+            "handlers": ["console", "xui_file"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        # Captures top-up flow logs from views.py
+        "frontend.views": {
+            "handlers": ["console", "xui_file"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        # General app-level logger
+        "billing_engine": {
+            "handlers": ["console", "app_file"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        # Django internals
+        "django": {
+            "handlers": ["console", "app_file"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
+}
