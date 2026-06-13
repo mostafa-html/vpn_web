@@ -15,7 +15,7 @@ urlpatterns = [
     path('plans/<int:plan_id>/buy/', views.buy_plan, name='buy_plan'),
     path('custom-plan/', views.custom_plan, name='custom_plan'),
     path('subscriptions/', views.subscriptions, name='subscriptions'),
-    path('subscriptions/<uuid:sub_id>/', views.subscription_detail, name='subscription_detail'),
+    path('subscriptions/<int:sub_id>/', views.subscription_detail, name='subscription_detail'),
     path('wallet/', views.wallet, name='wallet'),
     path('transactions/', views.transactions, name='transactions'),
     path('profile/change-password/', views.change_password, name='change_password'),
@@ -40,6 +40,6 @@ urlpatterns = [
     path('master/pricing/', views.master_pricing, name='master_pricing'),
     path('master/pricing/<int:tier_id>/delete/', views.master_pricing_delete, name='master_pricing_delete'),
     path('master/subscriptions/', views.master_subscriptions, name='master_subscriptions'),
-    path('master/subscriptions/<uuid:sub_id>/deprovision/', views.master_deprovision, name='master_deprovision'),
-    path('master/subscriptions/<uuid:sub_id>/edit/', views.master_subscription_edit, name='master_subscription_edit'),
+    path('master/subscriptions/<int:sub_id>/deprovision/', views.master_deprovision, name='master_deprovision'),
+    path('master/subscriptions/<int:sub_id>/edit/', views.master_subscription_edit, name='master_subscription_edit'),
 ]
