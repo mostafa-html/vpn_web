@@ -135,7 +135,8 @@ def _get_live_client_data_for_uuid(server, target_uuid):
             aggregated['used_bytes'] += int(stats.get('up', 0)) + int(stats.get('down', 0))
             aggregated['email'] = email
             aggregated['enable'] = cli.get('enable', True)
-            total_bytes = int(cli.get('totalGB', 0))
+            # totalGB from 3x-ui is plain GB — convert to bytes for consistent internal use
+            total_bytes = int(cli.get('totalGB', 0)) * BYTES_PER_GB
             expiry_ms = int(cli.get('expiryTime', 0))
             if total_bytes > aggregated['total_bytes']:
                 aggregated['total_bytes'] = total_bytes
@@ -149,11 +150,14 @@ def _get_live_client_data_for_uuid(server, target_uuid):
 # 3x-ui sync helpers
 # ---------------------------------------------------------------------------
 
-def _xui_update_sub(sub, new_total_gb_bytes=None, new_expiry_ms=None, new_enable=None):
+def _xui_update_sub(sub, new_total_gb=None, new_expiry_ms=None, new_enable=None):
     """
     Push changed fields to every inbound this subscription is mapped to.
     Fetches current live values first so un-changed fields are preserved.
-    All args are optional — pass only what changed.
+
+    new_total_gb  : plain gigabytes (e.g. 10)  — NOT bytes
+    new_expiry_ms : Unix milliseconds
+    new_enable    : bool
     """
     mappings = SubscriptionConfigMapping.objects.select_related('inbound__server').filter(subscription=sub)
     if not mappings.exists():
@@ -166,8 +170,7 @@ def _xui_update_sub(sub, new_total_gb_bytes=None, new_expiry_ms=None, new_enable
         client_email = mapping.xui_client_email
         client_uuid = sub.xui_client_uuid
 
-        # Fetch current live state to preserve fields we're not changing
-        current_total, current_expiry, current_enable = 0, 0, True
+        current_total_gb, current_expiry, current_enable = 0, 0, True
         try:
             resp = XuiAPIClient(server).get_inbounds()
             for ib in resp.get('obj', []):
@@ -175,7 +178,7 @@ def _xui_update_sub(sub, new_total_gb_bytes=None, new_expiry_ms=None, new_enable
                     continue
                 for cli in _parse_field(ib.get('settings', {})).get('clients', []):
                     if cli.get('id') == client_uuid:
-                        current_total = int(cli.get('totalGB', 0))
+                        current_total_gb = int(cli.get('totalGB', 0))  # plain GB
                         current_expiry = int(cli.get('expiryTime', 0))
                         current_enable = cli.get('enable', True)
                         break
@@ -188,7 +191,7 @@ def _xui_update_sub(sub, new_total_gb_bytes=None, new_expiry_ms=None, new_enable
                 inbound_id=inbound_id,
                 client_uuid=client_uuid,
                 email=client_email,
-                total_gb=new_total_gb_bytes if new_total_gb_bytes is not None else current_total,
+                total_gb=new_total_gb if new_total_gb is not None else current_total_gb,
                 expiry_time_ms=new_expiry_ms if new_expiry_ms is not None else current_expiry,
                 enable=new_enable if new_enable is not None else current_enable,
             )
@@ -304,7 +307,7 @@ def buy_plan(request, plan_id):
     if request.method == 'POST':
         try:
             result = process_purchase(buyer=request.user, plan=plan)
-            messages.success(request, f'Plan purchased! Your subscription is ready.')
+            messages.success(request, 'Plan purchased! Your subscription is ready.')
         except InsufficientFundsError:
             messages.error(request, 'Insufficient wallet balance.')
         except NoAvailableServerError as e:
@@ -466,7 +469,7 @@ def subscription_topup(request, sub_id):
             sub.save(update_fields=['total_allocated_gb', 'is_active', 'updated_at'])
             _create_internal_transaction(user=user, txn_type=Transaction.TypeChoices.PLAN_PURCHASE,
                                          amount=cost, ref_code=f'TOPUP{sub.id}T{ts}')
-            xui_push_kwargs['new_total_gb_bytes'] = sub.total_allocated_gb * BYTES_PER_GB
+            xui_push_kwargs['new_total_gb'] = int(sub.total_allocated_gb)  # plain GB
             messages.success(request, f'{extra_gb} GB added. Cost: {cost} IRR.')
 
         elif action == 'renew':
@@ -618,7 +621,8 @@ def _build_live_client_map(server):
             up = int(stats.get('up', 0))
             down = int(stats.get('down', 0))
             used = up + down
-            total_bytes = int(cli.get('totalGB', 0))
+            # totalGB from 3x-ui is plain GB — convert to bytes for internal display
+            total_bytes = int(cli.get('totalGB', 0)) * BYTES_PER_GB
             expiry_ms = int(cli.get('expiryTime', 0))
             if uuid not in result:
                 result[uuid] = {
@@ -683,7 +687,8 @@ def _sync_server_inbounds_and_clients(server):
             stats = stats_by_email.get(email, {})
             up = int(stats.get('up', 0))
             down = int(stats.get('down', 0))
-            total_bytes = int(cli.get('totalGB', 0))
+            # totalGB from 3x-ui is plain GB — convert to bytes for DB storage
+            total_bytes = int(cli.get('totalGB', 0)) * BYTES_PER_GB
             expiry_ms = int(cli.get('expiryTime', 0))
             if uuid not in uuid_to_data:
                 uuid_to_data[uuid] = {
@@ -1029,16 +1034,10 @@ def master_subscriptions(request):
 
 @require_role('MASTER_ADMIN')
 def master_deprovision(request, sub_id):
-    """
-    Deactivate a subscription in DB and disable the client on 3x-ui.
-    Does NOT delete the client — it just sets enable=False so the admin
-    can re-activate later if needed.
-    """
     sub = get_object_or_404(ProxySubscription, id=sub_id)
     if request.method == 'POST':
         sub.is_active = False
         sub.save(update_fields=['is_active', 'updated_at'])
-        # Disable on 3x-ui
         try:
             _xui_update_sub(sub, new_enable=False)
         except Exception as e:
@@ -1051,9 +1050,6 @@ def master_deprovision(request, sub_id):
 
 @require_role('MASTER_ADMIN')
 def master_subscription_edit(request, sub_id):
-    """
-    Edit total_gb, expiry, owner, or active state — then push the changes to 3x-ui.
-    """
     sub = get_object_or_404(ProxySubscription, id=sub_id)
     if request.method == 'POST':
         try:
@@ -1088,11 +1084,10 @@ def master_subscription_edit(request, sub_id):
 
             sub.save()
 
-            # Push all changed fields to 3x-ui
             try:
                 _xui_update_sub(
                     sub,
-                    new_total_gb_bytes=sub.total_allocated_gb * BYTES_PER_GB,
+                    new_total_gb=int(sub.total_allocated_gb),  # plain GB
                     new_expiry_ms=int(sub.expires_at.timestamp() * 1000),
                     new_enable=sub.is_active,
                 )

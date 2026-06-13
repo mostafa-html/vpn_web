@@ -128,8 +128,9 @@ def process_purchase(
     expires_at = timezone.now() + timedelta(days=duration_days)
     sub_url = _build_subscription_url(server, client_uuid)
     xui_email = f"{buyer.username.split('@')[0]}_{client_uuid[:8]}@vpn.local"
-    total_gb_bytes = total_gb * BYTES_PER_GB
     expiry_ms = int(expires_at.timestamp() * 1000)
+    # 3x-ui totalGB field takes plain GB (NOT bytes)
+    total_gb_for_xui = int(total_gb)
 
     with transaction.atomic():
         locked_account = CustomUser.objects.select_for_update().get(pk=billing_account.pk)
@@ -166,18 +167,18 @@ def process_purchase(
             xui_client_email=xui_email,
         )
 
-    logger.info('Purchase complete: buyer=%s ref=%s sub=%s', buyer.pk, payment_ref, sub.pk)
+    logger.info('Purchase complete: buyer=%s ref=%s sub=%s gb=%s', buyer.pk, payment_ref, sub.pk, total_gb)
 
-    # 5. Provision on 3x-ui (outside atomic — panel failure won't roll back billing)
+    # 5. Provision on 3x-ui (outside atomic)
     try:
         XuiAPIClient(server).add_client(
             inbound_id=inbound.xui_inbound_id,
             client_uuid=client_uuid,
             email=xui_email,
-            total_gb=total_gb_bytes,
+            total_gb=total_gb_for_xui,   # plain GB
             expiry_time_ms=expiry_ms,
         )
-        logger.info('3x-ui client added: uuid=%s inbound=%s', client_uuid, inbound.xui_inbound_id)
+        logger.info('3x-ui client added: uuid=%s inbound=%s gb=%s', client_uuid, inbound.xui_inbound_id, total_gb_for_xui)
     except XuiAPIException as e:
         logger.error('Failed to add client to 3x-ui for sub %s: %s', sub.pk, e)
 

@@ -19,6 +19,12 @@ class XuiAPIClient:
     Token: Panel Settings -> Security -> API Token
     URL layout (example base_path=/secret/):
       API -> https://host:port/secret/panel/api/...
+
+    NOTE on units
+    -------------
+    The 3x-ui REST API stores traffic limits as BYTES in the `totalGB` field
+    despite its misleading name.  Pass raw bytes for all traffic cap arguments.
+    Expiry is always Unix milliseconds.
     """
 
     def __init__(self, server: XuiServer):
@@ -105,8 +111,9 @@ class XuiAPIClient:
                    total_gb: int = 0, expiry_time_ms: int = 0) -> Dict[str, Any]:
         """
         Add a new client to an inbound.
-        total_gb      : traffic cap in BYTES (0 = unlimited)
-        expiry_time_ms: expiry as Unix ms    (0 = never)
+
+        total_gb       : traffic cap in plain GIGABYTES (e.g. 10 = 10 GB). 0 = unlimited.
+        expiry_time_ms : expiry as Unix milliseconds. 0 = never expires.
         """
         client_payload = {
             "id": client_uuid,
@@ -130,9 +137,10 @@ class XuiAPIClient:
                       enable: bool = True) -> Dict[str, Any]:
         """
         Update an existing client.
-        total_gb      : traffic cap in BYTES (0 = unlimited)
-        expiry_time_ms: expiry as Unix ms    (0 = never)
-        enable        : whether the client is active
+
+        total_gb       : traffic cap in plain GIGABYTES (e.g. 10 = 10 GB). 0 = unlimited.
+        expiry_time_ms : expiry as Unix milliseconds. 0 = never expires.
+        enable         : whether the client is active.
         """
         client_payload = {
             "id": client_uuid,
