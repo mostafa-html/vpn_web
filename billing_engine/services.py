@@ -19,7 +19,7 @@ BYTES_PER_GB = 1024 ** 3
 
 
 class InsufficientFundsError(Exception):
-    """Raised when an account balance is lower than the computed transaction cost."""
+    """Raised when wallet balance is lower than the purchase cost."""
     pass
 
 
@@ -30,9 +30,7 @@ class NoAvailableServerError(Exception):
 
 def _pick_inbound() -> XuiInbound:
     """
-    Return the best available inbound to provision a new client on.
-    Strategy: active server, inbound available for purchase, fewest existing
-    subscriptions mapped to it (least-loaded).
+    Return the least-loaded available inbound.
     Raises NoAvailableServerError if nothing is available.
     """
     inbounds = (
@@ -45,23 +43,17 @@ def _pick_inbound() -> XuiInbound:
             'No active inbounds are available for purchase. '
             'Ask the admin to add a server or enable an inbound.'
         )
-
-    # Pick least-loaded inbound
     best = None
     best_count = None
     for ib in inbounds:
         count = SubscriptionConfigMapping.objects.filter(inbound=ib).count()
-        capacity = ib.server.max_client_capacity
-        if count >= capacity:
-            continue  # full
+        if count >= ib.server.max_client_capacity:
+            continue
         if best is None or count < best_count:
             best = ib
             best_count = count
-
     if best is None:
-        raise NoAvailableServerError(
-            'All available inbounds have reached their client capacity.'
-        )
+        raise NoAvailableServerError('All available inbounds have reached their client capacity.')
     return best
 
 
@@ -82,14 +74,10 @@ def process_purchase(
     Full subscription purchase flow:
       1. Validate inputs & resolve pricing
       2. Pick least-loaded available inbound
-      3. Deduct wallet (atomic, row-locked)
-      4. Create ProxySubscription + Transaction in DB
-      5. Call 3x-ui addClient API
-      6. Create SubscriptionConfigMapping
+      3. Deduct wallet + create DB records (atomic)
+      4. Call 3x-ui addClient API (outside atomic)
     """
-    # ------------------------------------------------------------------
     # 1. Input normalisation
-    # ------------------------------------------------------------------
     if plan is not None:
         if custom_gb is not None or custom_days is not None:
             raise ValueError("Provide either a VPNPlan OR custom_gb/custom_days, not both.")
@@ -103,9 +91,7 @@ def process_purchase(
         total_gb = custom_gb
         duration_days = custom_days
 
-    # ------------------------------------------------------------------
     # 2. Billing account & pricing tier
-    # ------------------------------------------------------------------
     if buyer.role == CustomUser.Role.END_USER and buyer.parent_manager is not None:
         billing_account = buyer.parent_manager
         pricing_target = buyer.parent_manager
@@ -132,30 +118,25 @@ def process_purchase(
         + (Decimal(str(duration_days)) * tier.price_per_day)
     ).quantize(Decimal('0.01'))
 
-    # ------------------------------------------------------------------
-    # 3. Pick inbound BEFORE taking the DB lock (read-only, fast)
-    # ------------------------------------------------------------------
+    # 3. Pick inbound (read-only, before lock)
     inbound = _pick_inbound()
     server = inbound.server
 
-    # ------------------------------------------------------------------
-    # 4. Atomic billing: deduct wallet + create DB records
-    # ------------------------------------------------------------------
+    # 4. Atomic billing + DB provisioning
     client_uuid = str(uuid.uuid4())
     payment_ref = f"TXN{uuid.uuid4().hex.upper()[:12]}"
     expires_at = timezone.now() + timedelta(days=duration_days)
     sub_url = _build_subscription_url(server, client_uuid)
-    # email label used inside 3x-ui to identify this client
     xui_email = f"{buyer.username.split('@')[0]}_{client_uuid[:8]}@vpn.local"
+    total_gb_bytes = total_gb * BYTES_PER_GB
+    expiry_ms = int(expires_at.timestamp() * 1000)
 
     with transaction.atomic():
         locked_account = CustomUser.objects.select_for_update().get(pk=billing_account.pk)
-
         if locked_account.wallet_balance < total_cost:
             raise InsufficientFundsError(
                 f"Insufficient balance. Have {locked_account.wallet_balance}, need {total_cost}."
             )
-
         locked_account.wallet_balance -= total_cost
         locked_account.save(update_fields=['wallet_balance'])
 
@@ -185,30 +166,20 @@ def process_purchase(
             xui_client_email=xui_email,
         )
 
-    logger.info(
-        'Purchase complete: buyer=%s ref=%s sub=%s inbound=%s',
-        buyer.pk, payment_ref, sub.pk, inbound.pk,
-    )
+    logger.info('Purchase complete: buyer=%s ref=%s sub=%s', buyer.pk, payment_ref, sub.pk)
 
-    # ------------------------------------------------------------------
-    # 5. Provision client on 3x-ui  (outside atomic block so a panel
-    #    failure does not roll back the billing transaction)
-    # ------------------------------------------------------------------
+    # 5. Provision on 3x-ui (outside atomic — panel failure won't roll back billing)
     try:
         XuiAPIClient(server).add_client(
             inbound_id=inbound.xui_inbound_id,
             client_uuid=client_uuid,
             email=xui_email,
+            total_gb=total_gb_bytes,
+            expiry_time_ms=expiry_ms,
         )
         logger.info('3x-ui client added: uuid=%s inbound=%s', client_uuid, inbound.xui_inbound_id)
     except XuiAPIException as e:
-        logger.error(
-            'Failed to add client to 3x-ui for sub %s: %s. '
-            'Manual provisioning required or next sync will pick it up.',
-            sub.pk, e,
-        )
-        # Don't re-raise — the user paid and the DB record exists.
-        # The admin can manually provision or re-sync the server.
+        logger.error('Failed to add client to 3x-ui for sub %s: %s', sub.pk, e)
 
     return {
         'status': 'SUCCESS',

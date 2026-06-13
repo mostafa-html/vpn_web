@@ -16,10 +16,7 @@ class XuiAPIException(Exception):
 class XuiAPIClient:
     """
     3x-ui v3.3.1+ API client using Bearer token auth.
-
-    Token is obtained from: Panel Settings -> Security -> API Token
-    Store it in XuiServer.api_token field.
-
+    Token: Panel Settings -> Security -> API Token
     URL layout (example base_path=/secret/):
       API -> https://host:port/secret/panel/api/...
     """
@@ -41,7 +38,7 @@ class XuiAPIClient:
         if not self.server.api_token:
             raise XuiAPIException(
                 f"No API token set for server '{self.server.name}'. "
-                "Go to 3x-ui Panel Settings -> Security -> API Token and save it on this server record."
+                "Go to 3x-ui Panel Settings -> Security -> API Token."
             )
         return {
             "Authorization": f"Bearer {self.server.api_token}",
@@ -76,7 +73,7 @@ class XuiAPIClient:
             except (Timeout, ConnectionError) as e:
                 if attempt == self.max_retries:
                     raise XuiAPIException(f"Failed after {self.max_retries} attempts: {e}") from e
-                logger.warning(f"Retry {attempt}/{self.max_retries} for {url} in {sleep_duration}s")
+                logger.warning("Retry %d/%d for %s in %ds", attempt, self.max_retries, url, sleep_duration)
                 time.sleep(sleep_duration)
             except HTTPError as e:
                 status_code = e.response.status_code if e.response is not None else 500
@@ -90,30 +87,52 @@ class XuiAPIClient:
                 raise XuiAPIException(f"Request failed: {e}") from e
         return {}
 
+    # ------------------------------------------------------------------
+    # READ
+    # ------------------------------------------------------------------
+
     def get_inbounds(self) -> Dict[str, Any]:
         return self._request("GET", "panel/api/inbounds/list")
 
-    def add_client(self, inbound_id: int, client_uuid: str, email: str) -> Dict[str, Any]:
+    def get_client_traffic(self, email: str) -> Dict[str, Any]:
+        return self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
+
+    # ------------------------------------------------------------------
+    # CREATE
+    # ------------------------------------------------------------------
+
+    def add_client(self, inbound_id: int, client_uuid: str, email: str,
+                   total_gb: int = 0, expiry_time_ms: int = 0) -> Dict[str, Any]:
+        """
+        Add a new client to an inbound.
+        total_gb      : traffic cap in BYTES (0 = unlimited)
+        expiry_time_ms: expiry as Unix ms    (0 = never)
+        """
+        client_payload = {
+            "id": client_uuid,
+            "email": email,
+            "totalGB": total_gb,
+            "expiryTime": expiry_time_ms,
+            "enable": True,
+        }
         payload = {
             "id": inbound_id,
-            "settings": f'{{"clients": [{{"id": "{client_uuid}", "email": "{email}"}}]}}',
+            "settings": json.dumps({"clients": [client_payload]}),
         }
         return self._request("POST", "panel/api/inbounds/addClient", json_data=payload)
+
+    # ------------------------------------------------------------------
+    # UPDATE
+    # ------------------------------------------------------------------
 
     def update_client(self, inbound_id: int, client_uuid: str, email: str,
                       total_gb: int = 0, expiry_time_ms: int = 0,
                       enable: bool = True) -> Dict[str, Any]:
         """
-        Update an existing client on a specific inbound.
-
-        Parameters
-        ----------
-        inbound_id    : 3x-ui numeric inbound id
-        client_uuid   : the client's UUID
-        email         : the client's email label (must match existing record)
-        total_gb      : new total traffic cap in bytes (0 = unlimited)
-        expiry_time_ms: new expiry as Unix milliseconds  (0 = never)
-        enable        : whether the client should be active
+        Update an existing client.
+        total_gb      : traffic cap in BYTES (0 = unlimited)
+        expiry_time_ms: expiry as Unix ms    (0 = never)
+        enable        : whether the client is active
         """
         client_payload = {
             "id": client_uuid,
@@ -132,8 +151,27 @@ class XuiAPIClient:
             json_data=payload,
         )
 
-    def get_client_traffic(self, email: str) -> Dict[str, Any]:
-        return self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
+    # ------------------------------------------------------------------
+    # DELETE
+    # ------------------------------------------------------------------
+
+    def delete_client(self, inbound_id: int, client_uuid: str) -> Dict[str, Any]:
+        """Remove a client from an inbound entirely."""
+        return self._request(
+            "POST",
+            f"panel/api/inbounds/{inbound_id}/delClient/{client_uuid}",
+        )
+
+    # ------------------------------------------------------------------
+    # MISC
+    # ------------------------------------------------------------------
+
+    def reset_client_traffic(self, inbound_id: int, email: str) -> Dict[str, Any]:
+        """Reset a client's up/down counters to zero."""
+        return self._request(
+            "POST",
+            f"panel/api/inbounds/{inbound_id}/resetClientTraffic/{email}",
+        )
 
     def sync_existing_clients(self) -> list:
         result = self.get_inbounds()
